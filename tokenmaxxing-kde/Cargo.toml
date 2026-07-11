@@ -3,7 +3,7 @@ name = "tokenmaxxing"
 version = "0.1.0"
 edition = "2021"
 description = "Electric LLM-quota meter for the KDE Plasma system tray"
-license = "MIT"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/guitaripod/tokenmaxxing"
 default-run = "tokenmaxxing"
 

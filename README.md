@@ -51,4 +51,4 @@ tokenmaxxing/
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL-3.0-or-later — see [LICENSE](LICENSE).
