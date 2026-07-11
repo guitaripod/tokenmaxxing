@@ -37,7 +37,9 @@ Gauge {
 
 ## Distinct identities
 
-| | Ampere | Prism |
+One product, `tokenmaxxing`, in two platform builds:
+
+| | KDE build | macOS build |
 | --- | --- | --- |
 | Platform | KDE Plasma 6 | macOS 26+ |
 | Toolkit | Rust · GTK4 · libadwaita · Cairo | SwiftUI · Liquid Glass |

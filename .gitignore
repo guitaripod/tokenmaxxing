@@ -1,10 +1,10 @@
 # Rust
-ampere-kde/target/
+tokenmaxxing-kde/target/
 
 # Swift
-prism-macos/.build/
-prism-macos/*.app/
-prism-macos/.swiftpm/
+tokenmaxxing-macos/.build/
+tokenmaxxing-macos/*.app/
+tokenmaxxing-macos/.swiftpm/
 
 # macOS
 .DS_Store
