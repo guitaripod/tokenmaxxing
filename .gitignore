@@ -1,0 +1,10 @@
+# Rust
+ampere-kde/target/
+
+# Swift
+prism-macos/.build/
+prism-macos/*.app/
+prism-macos/.swiftpm/
+
+# macOS
+.DS_Store

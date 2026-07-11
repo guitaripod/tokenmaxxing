@@ -1,0 +1,101 @@
+window.ampere {
+  background-color: #0A0E14;
+  color: #DCE3F0;
+}
+
+.ampere headerbar {
+  background: #0A0E14;
+  border: none;
+  box-shadow: none;
+  min-height: 42px;
+}
+
+.ampere headerbar .title {
+  font-weight: 800;
+}
+
+.card {
+  background: linear-gradient(155deg, #131A29, #0D121C);
+  border: 1px solid #1E2838;
+  border-radius: 16px;
+  padding: 14px 16px;
+}
+
+.provider-name {
+  font-weight: 800;
+  font-size: 16px;
+}
+
+.accent-cyan {
+  color: #00E5FF;
+}
+
+.accent-lime {
+  color: #B6FF00;
+}
+
+.subtitle {
+  font-size: 11px;
+}
+
+.muted {
+  color: #6B7688;
+}
+
+.footer {
+  font-size: 11px;
+  font-family: monospace;
+}
+
+.badge {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 9px;
+  border-radius: 999px;
+  color: #04222A;
+}
+
+.badge-live {
+  background: #00E5FF;
+  color: #04222A;
+}
+
+.badge-est {
+  background: #B6FF00;
+  color: #1A2600;
+}
+
+.badge-offline {
+  background: #FF2E88;
+  color: #2A0714;
+}
+
+.metric-label {
+  font-size: 12px;
+  color: #AEB8CC;
+}
+
+.metric-value {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: monospace;
+  color: #EAF0FA;
+}
+
+.metric-sub {
+  font-size: 10px;
+  color: #6B7688;
+  font-family: monospace;
+}
+
+.note {
+  font-size: 10px;
+  color: #71E0C6;
+  margin-top: 6px;
+}
+
+.error {
+  font-size: 11px;
+  color: #FF2E88;
+  margin-top: 6px;
+}
