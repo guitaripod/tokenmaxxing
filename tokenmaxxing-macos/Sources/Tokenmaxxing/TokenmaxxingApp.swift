@@ -11,7 +11,7 @@ struct TokenmaxxingApp: App {
                 .environment(model)
                 .task { model.start() }
         } label: {
-            Image(systemName: "cube.transparent")
+            Image(systemName: "bolt.fill")
         }
         .menuBarExtraStyle(.window)
     }

@@ -1,6 +1,12 @@
 # tokenmaxxing
 
-Native desktop meters for your LLM subscription token quotas. One product, two platform builds with deliberately distinct identities.
+<p align="left">
+  <img src="assets/icon.png" width="112" alt="tokenmaxxing — KDE" />
+  &nbsp;
+  <img src="assets/icon-macos.png" width="112" alt="tokenmaxxing — macOS" />
+</p>
+
+Native desktop meters for your LLM subscription token quotas. One product, two platform builds with deliberately distinct identities — a bolt cradled in a ¾-swept ring gauge, rendered electric on KDE and iridescent on macOS.
 
 | **KDE build** (Rust · GTK4 · libadwaita) | **macOS build** (SwiftUI · Liquid Glass) |
 | --- | --- |

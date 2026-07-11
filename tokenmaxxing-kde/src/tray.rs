@@ -1,4 +1,4 @@
-use crate::gauge;
+use crate::icon;
 use crate::worker::FromUi;
 use gtk::cairo::{Context, Format, ImageSurface};
 use ksni::blocking::TrayMethods;
@@ -131,7 +131,7 @@ fn open_url(url: &str) {
 fn render_icon(size: i32) -> Icon {
     let mut surface = ImageSurface::create(Format::ARgb32, size, size).expect("icon surface");
     if let Ok(cr) = Context::new(&surface) {
-        gauge::draw_logo(&cr, f64::from(size));
+        icon::draw(&cr, f64::from(size));
     }
     surface.flush();
 

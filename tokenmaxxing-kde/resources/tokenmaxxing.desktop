@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=tokenmaxxing
+GenericName=LLM token quota meter
+Comment=Live Claude usage + local opencode-go estimate in your tray
+Exec=tokenmaxxing
+Icon=tokenmaxxing
+Categories=Utility;System;Monitor;
+Terminal=false
+StartupNotify=false

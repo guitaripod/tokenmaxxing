@@ -1,6 +1,7 @@
 mod config;
 mod creds;
 mod gauge;
+mod icon;
 mod model;
 mod providers;
 mod sharecard;
@@ -24,6 +25,23 @@ fn main() -> glib::ExitCode {
             .filter(|value| !value.starts_with('-'))
             .map(std::path::PathBuf::from);
         return run_export(path);
+    }
+    if let Some(index) = args.iter().position(|a| a == "--icon") {
+        let path = args
+            .get(index + 1)
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/tokenmaxxing-icon.png"));
+        let size = args.get(index + 2).and_then(|s| s.parse().ok()).unwrap_or(1024);
+        return match icon::render(size, &path) {
+            Ok(()) => {
+                println!("{}", path.display());
+                glib::ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("icon render failed: {error}");
+                glib::ExitCode::FAILURE
+            }
+        };
     }
 
     let app = adw::Application::builder().application_id(APP_ID).build();

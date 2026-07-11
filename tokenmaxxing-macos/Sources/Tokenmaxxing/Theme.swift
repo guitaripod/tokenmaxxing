@@ -39,47 +39,82 @@ enum Palette {
 }
 
 /// The Tokenmaxxing mark: a glass triangle refracting a white ray into the spectrum.
+/// The tokenmaxxing mark: a bolt cradled by a ¾-swept ring gauge, in the
+/// iridescent colorway. Shares the motif of the KDE build's electric mark.
 struct TokenmaxxingMark: View {
     var size: CGFloat
 
     var body: some View {
         Canvas { context, canvasSize in
             let s = min(canvasSize.width, canvasSize.height)
-            let triangle = Path { path in
-                path.move(to: CGPoint(x: s * 0.5, y: s * 0.14))
-                path.addLine(to: CGPoint(x: s * 0.86, y: s * 0.82))
-                path.addLine(to: CGPoint(x: s * 0.14, y: s * 0.82))
-                path.closeSubpath()
-            }
+            let center = CGPoint(x: s * 0.5, y: s * 0.5)
+            let radius = s * 0.34
+            let width = s * 0.13
+
+            var ring = Path()
+            ring.addArc(
+                center: center, radius: radius,
+                startAngle: .degrees(-90), endAngle: .degrees(-90 + 302),
+                clockwise: false
+            )
             context.stroke(
-                triangle,
+                ring,
                 with: .linearGradient(
                     Gradient(colors: [Palette.aqua, Palette.violet, Palette.pink]),
-                    startPoint: .zero,
-                    endPoint: CGPoint(x: s, y: s)
+                    startPoint: CGPoint(x: center.x - radius, y: center.y - radius),
+                    endPoint: CGPoint(x: center.x + radius, y: center.y + radius)
                 ),
-                lineWidth: s * 0.07
+                style: StrokeStyle(lineWidth: width, lineCap: .round)
             )
-            context.stroke(
-                Path { p in
-                    p.move(to: CGPoint(x: 0, y: s * 0.5))
-                    p.addLine(to: CGPoint(x: s * 0.46, y: s * 0.5))
-                },
-                with: .color(Palette.text),
-                lineWidth: s * 0.06
-            )
-            for (index, color) in Palette.spectrum.enumerated() {
-                let spread = (CGFloat(index) - 1.5) * s * 0.11
-                context.stroke(
-                    Path { p in
-                        p.move(to: CGPoint(x: s * 0.62, y: s * 0.5))
-                        p.addLine(to: CGPoint(x: s, y: s * 0.5 + spread))
-                    },
-                    with: .color(color),
-                    lineWidth: s * 0.045
+
+            context.fill(
+                Self.boltPath(center: center, box: s * 0.52),
+                with: .linearGradient(
+                    Gradient(colors: [.white, Palette.aqua]),
+                    startPoint: CGPoint(x: center.x, y: center.y - radius),
+                    endPoint: CGPoint(x: center.x, y: center.y + radius)
                 )
-            }
+            )
         }
         .frame(width: size, height: size)
+    }
+
+    static func boltPath(center: CGPoint, box: CGFloat) -> Path {
+        let ox = center.x - box * 0.52
+        let oy = center.y - box * 0.51
+        let points: [(CGFloat, CGFloat)] = [
+            (0.585, 0.12), (0.34, 0.55), (0.5, 0.55),
+            (0.415, 0.9), (0.7, 0.43), (0.52, 0.43),
+        ]
+        var path = Path()
+        path.move(to: CGPoint(x: points[0].0 * box + ox, y: points[0].1 * box + oy))
+        for point in points.dropFirst() {
+            path.addLine(to: CGPoint(x: point.0 * box + ox, y: point.1 * box + oy))
+        }
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// The full app icon: a squircle with a glow behind the mark. Rendered to a PNG
+/// for the .icns via `Tokenmaxxing --icon`.
+struct AppIconView: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 1024 * 0.225, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color(red: 0.063, green: 0.086, blue: 0.125),
+                                 Color(red: 0.016, green: 0.027, blue: 0.043)],
+                        startPoint: .topLeading, endPoint: .bottom
+                    )
+                )
+            RadialGradient(
+                colors: [Palette.violet.opacity(0.30), Palette.aqua.opacity(0.10), .clear],
+                center: .center, startRadius: 40, endRadius: 580
+            )
+            TokenmaxxingMark(size: 760)
+        }
+        .frame(width: 1024, height: 1024)
     }
 }

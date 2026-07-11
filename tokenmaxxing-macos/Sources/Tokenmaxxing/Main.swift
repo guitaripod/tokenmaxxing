@@ -12,6 +12,11 @@ struct Entry {
             Headless.export(to: path)
             return
         }
+        if let index = arguments.firstIndex(of: "--icon") {
+            let path = (arguments.count > index + 1) ? arguments[index + 1] : "/tmp/tokenmaxxing-icon.png"
+            Headless.icon(to: path)
+            return
+        }
         TokenmaxxingApp.main()
     }
 }
@@ -47,6 +52,28 @@ enum Headless {
                 print(url.path)
             } catch {
                 FileHandle.standardError.write(Data("tokenmaxxing: write failed: \(error)\n".utf8))
+            }
+        }
+    }
+
+    static func icon(to path: String) {
+        MainActor.assumeIsolated {
+            _ = NSApplication.shared
+            let renderer = ImageRenderer(content: AppIconView())
+            renderer.scale = 1.0
+            guard let image = renderer.nsImage,
+                  let tiff = image.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: tiff),
+                  let png = bitmap.representation(using: .png, properties: [:])
+            else {
+                FileHandle.standardError.write(Data("tokenmaxxing: icon render failed\n".utf8))
+                return
+            }
+            do {
+                try png.write(to: URL(fileURLWithPath: path))
+                print(path)
+            } catch {
+                FileHandle.standardError.write(Data("tokenmaxxing: icon write failed: \(error)\n".utf8))
             }
         }
     }
