@@ -7,6 +7,15 @@ pub const SCALE_STEPS: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
 pub struct Config {
     #[serde(default = "default_scale")]
     pub ui_scale: f64,
+    /// Remembered window sizes; `None` falls back to the built-in defaults.
+    #[serde(default)]
+    pub limits_width: Option<i32>,
+    #[serde(default)]
+    pub limits_height: Option<i32>,
+    #[serde(default)]
+    pub dashboard_width: Option<i32>,
+    #[serde(default)]
+    pub dashboard_height: Option<i32>,
 }
 
 fn default_scale() -> f64 {
@@ -17,6 +26,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             ui_scale: default_scale(),
+            limits_width: None,
+            limits_height: None,
+            dashboard_width: None,
+            dashboard_height: None,
         }
     }
 }

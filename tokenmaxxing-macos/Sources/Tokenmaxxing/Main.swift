@@ -24,20 +24,32 @@ struct Entry {
 /// One-shot render used by `Tokenmaxxing --export <path>` and for headless verification.
 enum Headless {
     static func export(to path: String?) {
-        let box = SnapshotBox()
+        let box = DashboardBox()
         let semaphore = DispatchSemaphore(value: 0)
         Task.detached {
             let anthropic = await AnthropicProvider.fetch()
-            let opencode = OpenCodeProvider.fetch()
-            box.snapshots = [anthropic, opencode]
+            let claudeUsage = await ClaudeHistory().scan()
+            let opencodeQuota = OpenCodeProvider.fetch()
+            let opencodeUsage = OpenCodeProvider.usage()
+            box.dashboard = Dashboard(
+                claudeQuota: anthropic,
+                claudeUsage: claudeUsage,
+                opencodeQuota: opencodeQuota,
+                opencodeUsage: opencodeUsage,
+                generatedAt: Date()
+            )
             semaphore.signal()
         }
         semaphore.wait()
 
         MainActor.assumeIsolated {
             _ = NSApplication.shared
-            let renderer = ImageRenderer(content: ShareCardView(snapshots: box.snapshots))
-            renderer.scale = 3.0
+            guard let dashboard = box.dashboard else {
+                FileHandle.standardError.write(Data("tokenmaxxing: build failed\n".utf8))
+                return
+            }
+            let renderer = ImageRenderer(content: ExportView(dashboard: dashboard, sections: buildSections(dashboard)))
+            renderer.scale = 2.0
             guard let image = renderer.nsImage,
                   let tiff = image.tiffRepresentation,
                   let bitmap = NSBitmapImageRep(data: tiff),
@@ -46,7 +58,7 @@ enum Headless {
                 FileHandle.standardError.write(Data("tokenmaxxing: render failed\n".utf8))
                 return
             }
-            let url = URL(fileURLWithPath: path ?? defaultPath())
+            let url = URL(fileURLWithPath: path ?? DashboardExport.defaultOutput().path)
             do {
                 try png.write(to: url)
                 print(url.path)
@@ -77,16 +89,8 @@ enum Headless {
             }
         }
     }
-
-    private static func defaultPath() -> String {
-        let directory = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return directory.appending(path: "tokenmaxxing-\(formatter.string(from: Date())).png").path
-    }
 }
 
-final class SnapshotBox: @unchecked Sendable {
-    var snapshots: [Snapshot] = []
+final class DashboardBox: @unchecked Sendable {
+    var dashboard: Dashboard?
 }

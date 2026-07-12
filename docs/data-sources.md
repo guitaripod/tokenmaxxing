@@ -44,3 +44,21 @@ WHERE json_extract(data,'$.providerID')='opencode-go'
 `fraction = min(1, window_spend / cap)`. Plus all-time totals (spend, sessions, tokens in/out, cache read) for the detail block. The card is labeled **EST** with a disclaimer.
 
 **Wiring a live reading later:** capture the console's own request (DevTools → Network → the `usage/me` or `balance/summary` call → *Copy as cURL*) to get the exact base URL, Bearer token, and response shape, then add a provider that prefers the live endpoint and falls back to the local estimate when the token is absent or expired. The account token comes from an OAuth device flow (`/accounts/deviceauth/{usercode,token}`), which is the durable, renewable path.
+
+## Local usage history — the analytics layer
+
+Beyond the live quota rings, both apps aggregate everything the two agents have written to disk into a full usage history (daily time-series, per-model / per-project / per-provider breakdowns, token composition, an activity heatmap, and lifetime totals). All of this is **local, exact for token counts, and estimated for dollars** (see the value note below).
+
+### Claude — from Claude Code's transcripts (ccusage-style)
+
+Claude Code records every turn to `~/.claude/projects/**/*.jsonl`. Each assistant line carries the authoritative token usage the model returned. The apps walk these files (incrementally — a per-file cache keyed by size + mtime, so only changed files are re-read), keep only `type == "assistant"` lines with a real `message.model` and non-zero usage, and **de-duplicate by `message.id` + `requestId`** (a turn present in multiple transcripts is counted once; a turn missing either id is always counted).
+
+Fields used per turn: `timestamp`, `message.model`, `sessionId`, `cwd` (→ project name), and `message.usage.{input_tokens, output_tokens, cache_creation_input_tokens (split via cache_creation.ephemeral_5m/1h), cache_read_input_tokens, server_tool_use.{web_search_requests, web_fetch_requests}}`.
+
+### opencode — all providers from `opencode.db`
+
+The same read-only `opencode.db` that backs the estimated caps also holds every message opencode has run, across **all** providers (the paid Go gateway plus any free/local models — anthropic, ollama, xai, …). The apps aggregate it with `GROUP BY` queries into daily spend, per-provider and per-model breakdowns, a token composition (including `reasoning`), an activity heatmap (`strftime` local weekday × hour), and free-vs-paid token split. Only `opencode-go` rows carry a `cost`; free providers contribute tokens with `$0`.
+
+### API-equivalent value (why the dollars are estimates)
+
+A Max/Pro subscription bills a flat fee, so a Claude turn has no per-message price. To give the history a dollar axis, the apps price each turn at **what the same tokens would cost on the metered API** — the value the subscription returns — using an embedded per-model rate table (Opus 4.8 `$5/$25`, Fable 5 `$10/$50`, Sonnet 5 `$3/$15`, Haiku 4.5 `$1/$5` per MTok) with the API's cache multipliers (5-minute writes ×1.25, 1-hour writes ×2, reads ×0.1 of the input rate). These figures are always labelled **estimates**; the token counts they are derived from are exact. For opencode, `opencode-go`'s `cost` is the provider's own figure; free providers show `$0`.

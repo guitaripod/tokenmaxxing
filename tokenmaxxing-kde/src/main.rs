@@ -1,10 +1,13 @@
+mod charts;
 mod config;
 mod creds;
+mod format;
 mod gauge;
 mod icon;
 mod model;
+mod pricing;
 mod providers;
-mod sharecard;
+mod render;
 mod theme;
 mod tray;
 mod ui;
@@ -13,18 +16,19 @@ mod worker;
 use adw::prelude::*;
 use gtk::glib;
 use std::sync::mpsc;
-use std::time::Duration;
 
 const APP_ID: &str = "dev.guitaripod.tokenmaxxing";
 
 fn main() -> glib::ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    if let Some(index) = args.iter().position(|a| a == "--export") {
-        let path = args
-            .get(index + 1)
-            .filter(|value| !value.starts_with('-'))
-            .map(std::path::PathBuf::from);
-        return run_export(path);
+    for (flag, scope) in [("--export", render::Scope::Full), ("--export-limits", render::Scope::Limits)] {
+        if let Some(index) = args.iter().position(|a| a == flag) {
+            let path = args
+                .get(index + 1)
+                .filter(|value| !value.starts_with('-'))
+                .map(std::path::PathBuf::from);
+            return run_export(path, scope);
+        }
     }
     if let Some(index) = args.iter().position(|a| a == "--icon") {
         let path = args
@@ -52,19 +56,13 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
-/// Headless one-shot: fetch both providers and write a share card, no GUI.
-fn run_export(path: Option<std::path::PathBuf>) -> glib::ExitCode {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("tokenmaxxing/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(20))
-        .build()
-        .expect("build http client");
-    let snapshots = vec![
-        providers::anthropic::fetch(&client),
-        providers::opencode::fetch(),
-    ];
-    let output = path.unwrap_or_else(sharecard::default_output);
-    match sharecard::render(&snapshots, &output) {
+/// Headless one-shot: build the dashboard (or just the compact limits view) and
+/// write it to a PNG, no GUI.
+fn run_export(path: Option<std::path::PathBuf>, scope: render::Scope) -> glib::ExitCode {
+    let dashboard = worker::snapshot_once();
+    let output = path.unwrap_or_else(render::default_output);
+    let width = if scope == render::Scope::Limits { 520.0 } else { 1500.0 };
+    match render::export(&dashboard, width, 2.0, None, scope, &output) {
         Ok(()) => {
             println!("{}", output.display());
             glib::ExitCode::SUCCESS
@@ -87,10 +85,7 @@ fn build_ui(app: &adw::Application) {
     let (tray_tx, tray_rx) = async_channel::unbounded::<tray::TrayEvent>();
     if tray::start(tray_tx, from_ui_tx) {
         std::mem::forget(app.hold());
-        app_ui.window().connect_close_request(|window| {
-            window.set_visible(false);
-            glib::Propagation::Stop
-        });
+        app_ui.set_close_hides_to_tray();
     }
 
     glib::spawn_future_local(glib::clone!(
@@ -115,7 +110,7 @@ fn build_ui(app: &adw::Application) {
         async move {
             while let Ok(message) = to_ui_rx.recv().await {
                 match message {
-                    worker::ToUi::Snapshots(snapshots) => app_ui.update(&snapshots),
+                    worker::ToUi::Dashboard(dashboard) => app_ui.update(&dashboard),
                 }
             }
         }

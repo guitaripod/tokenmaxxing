@@ -35,6 +35,44 @@ Gauge {
 - **Reset trust:** a session reset is trustworthy; weekly resets and all opencode windows are shown with a `~` prefix or omitted, never used for logic.
 - **State is always explicit:** the `authority` badge (LIVE / EST / OFFLINE) and `source` line say where every number came from.
 
+## Usage analytics model
+
+The live `Snapshot` (rings) is now joined by a `Usage` value per provider, computed from local history ([data-sources.md](data-sources.md)). The dashboard renders both.
+
+```
+Dashboard {
+  claude_quota:    Snapshot     // live rings, enhanced below
+  claude_usage:    Usage        // from ~/.claude/projects transcripts
+  opencode_quota:  Snapshot     // estimated caps (existing)
+  opencode_usage:  Usage        // from opencode.db, all providers
+  generated_at:    timestamp
+}
+
+Usage {
+  scope, source, authority
+  totals:   { cost_usd, input, output, cache_write, cache_read, messages,
+              sessions, active_days, web_search, web_fetch, first_day, last_day }
+  windows:  { today, seven, thirty } of { cost, tokens, messages }   // calendar-day
+  daily:    [DayPoint { date, cost, tokens, messages }]              // ascending
+  by_model / by_project / by_provider: [Segment { label, cost, tokens, messages }]
+  tokens:   { input, output, cache_write, cache_read, reasoning }    // composition
+  heatmap:  counts[7][24] (weekday 0=Mon × hour) + max               // punch card
+}
+```
+
+`Snapshot`/`Gauge` gained three fields the live endpoint exposes: `Gauge.api_severity` (the server's own severity, trusted over the fraction threshold), `Gauge.is_active` (the *binding* constraint — the limit that will stop the user first), and `Snapshot.spend` (prepaid/overflow-credit state).
+
+- **Dollars are API-equivalent estimates**, tokens are exact — every `$` is under an EST badge.
+- **`cost` breakdowns rank by tokens** (a metric every row has, priced or free) so bar lengths are comparable; the caption shows dollars where priced.
+
+## Dashboard
+
+A fullscreen-capable window (was a ~400px popover), everything on one screen, laid out by a responsive flow that reflows from ~1000px up to 4K. One layout engine drives both the live canvas and the PNG export, so a screenshot is pixel-for-pixel the live view.
+
+- **Hero** — the binding limit (`is_active`) as the largest ring, severity-coloured, with its reset ETA. The first-200ms "am I about to hit a wall?" answer.
+- **Sections** — Claude live quota (rings + reset-horizon timeline), Claude usage (value-returned hero, KPI strip, daily area charts, model/project bars, token-composition, activity heatmap), then the same two sections for opencode (caps + all-provider usage, plus a free-vs-paid donut).
+- **Screenshot utility** — export the whole dashboard or a chosen subset (segments on KDE, sections on macOS) to a high-resolution PNG that is also copied to the clipboard.
+
 ## Distinct identities
 
 One product, `tokenmaxxing`, in two platform builds:

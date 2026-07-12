@@ -13,12 +13,40 @@ enum Palette {
     static let text = Color(red: 0.91, green: 0.93, blue: 0.98)
     static let muted = Color(red: 0.56, green: 0.60, blue: 0.70)
     static let track = Color(red: 0.16, green: 0.17, blue: 0.24)
+    static let panel = Color(red: 0.075, green: 0.086, blue: 0.145)
+    static let teal = Color(red: 0.18, green: 0.85, blue: 0.75)
+    static let azure = Color(red: 0.30, green: 0.56, blue: 0.98)
+    static let lime = Color(red: 0.70, green: 0.95, blue: 0.42)
+    static let orange = Color(red: 1.0, green: 0.55, blue: 0.35)
 
     /// The full refraction spectrum, used for the mark and window backdrop.
     static let spectrum = [pink, violet, indigo, aqua]
 
+    /// An iridescent categorical ramp for series (models, providers). Wraps.
+    static let ramp: [Color] = [aqua, violet, pink, amber, teal, azure, lime, orange]
+
+    static func series(_ index: Int) -> Color {
+        ramp[((index % ramp.count) + ramp.count) % ramp.count]
+    }
+
+    /// Colors for the token tiers, in composition order.
+    static let tokenInput = aqua
+    static let tokenOutput = violet
+    static let tokenCacheWrite = pink
+    static let tokenCacheRead = azure
+    static let tokenReasoning = amber
+
     static func accent(_ providerId: String) -> Color {
-        providerId == "anthropic" ? indigo : violet
+        providerId == "anthropic" ? aqua : violet
+    }
+
+    /// Best-effort monthly list price for the plan named in the quota subtitle,
+    /// so the value-returned tile can show a rough return multiple.
+    static func planMonthlyUSD(_ subtitle: String) -> Double? {
+        let s = subtitle.lowercased()
+        if s.contains("max") { return s.contains("20") ? 200 : 100 }
+        if s.contains("pro") { return 20 }
+        return nil
     }
 
     static func gauge(_ accent: Color, _ severity: Severity) -> Color {

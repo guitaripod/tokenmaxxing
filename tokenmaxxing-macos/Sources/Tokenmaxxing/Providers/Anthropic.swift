@@ -65,7 +65,8 @@ enum AnthropicProvider {
             gauges: gauges,
             details: details(json),
             note: nil,
-            error: nil
+            error: nil,
+            spend: spendInfo(json)
         )
     }
 
@@ -88,8 +89,67 @@ enum AnthropicProvider {
             fraction: min(1, max(0, percent / 100)),
             used: nil, limit: nil, unit: .percent,
             detail: nil, resetsAt: parseTimestamp(item["resets_at"]),
-            trustedReset: kind == "session"
+            trustedReset: kind == "session",
+            apiSeverity: severity(from: item["severity"] as? String),
+            isActive: (item["is_active"] as? NSNumber)?.boolValue ?? false
         )
+    }
+
+    /// Prefer the server's own severity over the fraction-derived threshold.
+    private static func severity(from value: String?) -> Severity? {
+        switch value {
+        case "critical": return .critical
+        case "warn", "warning": return .warn
+        case "normal", "ok": return .nominal
+        default: return nil
+        }
+    }
+
+    /// The prepaid / pay-as-you-go credit block, when the plan exposes one.
+    private static func spendInfo(_ json: [String: Any]) -> SpendInfo? {
+        guard let spend = json["spend"] as? [String: Any] else { return nil }
+        return SpendInfo(
+            enabled: (spend["enabled"] as? NSNumber)?.boolValue ?? false,
+            used: money(spend["used"]) ?? 0,
+            limit: money(spend["limit"]),
+            balance: money(spend["balance"]),
+            canPurchase: (spend["can_purchase_credits"] as? NSNumber)?.boolValue ?? false,
+            disclaimer: (spend["disclaimer"] as? String).map(stripMarkdownLinks)
+        )
+    }
+
+    /// Accepts a bare dollar number or a `{amount_minor, exponent}` object → dollars.
+    private static func money(_ value: Any?) -> Double? {
+        if let n = value as? NSNumber, !(value is NSNull) { return n.doubleValue }
+        guard let dict = value as? [String: Any],
+              let minor = (dict["amount_minor"] as? NSNumber)?.doubleValue
+        else { return nil }
+        let exponent = (dict["exponent"] as? NSNumber)?.intValue ?? 2
+        return minor / pow(10.0, Double(exponent))
+    }
+
+    /// Reduce `[label](url)` markdown links to their label for plain rendering.
+    private static func stripMarkdownLinks(_ text: String) -> String {
+        var out = ""
+        let chars = Array(text)
+        var i = 0
+        while i < chars.count {
+            if chars[i] == "[" {
+                i += 1
+                var label = ""
+                while i < chars.count, chars[i] != "]" { label.append(chars[i]); i += 1 }
+                if i < chars.count { i += 1 } // skip ']'
+                if i < chars.count, chars[i] == "(" {
+                    while i < chars.count, chars[i] != ")" { i += 1 }
+                    if i < chars.count { i += 1 } // skip ')'
+                }
+                out += label
+            } else {
+                out.append(chars[i])
+                i += 1
+            }
+        }
+        return out
     }
 
     private static func gaugesFromTopLevel(_ json: [String: Any]) -> [Gauge] {

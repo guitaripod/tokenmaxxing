@@ -1,5 +1,5 @@
 use crate::creds::{self, ClaudeCredentials};
-use crate::model::{Authority, Gauge, Snapshot, Unit};
+use crate::model::{Authority, Gauge, Severity, Snapshot, SpendInfo, Unit};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
@@ -81,6 +81,63 @@ fn parse(body: &str, creds: &ClaudeCredentials) -> Snapshot {
         details: details(&json),
         note: None,
         error: None,
+        spend: spend_info(&json),
+    }
+}
+
+/// The prepaid / pay-as-you-go credit block, when the plan exposes one.
+fn spend_info(json: &Value) -> Option<SpendInfo> {
+    let spend = json.get("spend")?;
+    Some(SpendInfo {
+        enabled: spend.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+        used: money(spend.get("used")).unwrap_or(0.0),
+        limit: money(spend.get("limit")),
+        balance: money(spend.get("balance")),
+        can_purchase: spend.get("can_purchase_credits").and_then(Value::as_bool).unwrap_or(false),
+        disclaimer: spend.get("disclaimer").and_then(Value::as_str).map(strip_markdown_links),
+    })
+}
+
+/// Accepts either a bare dollar number or a `{amount_minor, exponent}` money
+/// object and returns dollars.
+fn money(value: Option<&Value>) -> Option<f64> {
+    let value = value?;
+    if let Some(n) = value.as_f64() {
+        return Some(n);
+    }
+    let minor = value.get("amount_minor").and_then(Value::as_f64)?;
+    let exponent = value.get("exponent").and_then(Value::as_i64).unwrap_or(2);
+    Some(minor / 10f64.powi(exponent as i32))
+}
+
+/// Reduce `[label](url)` markdown links to just their label for plain rendering.
+fn strip_markdown_links(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '[' {
+            let label: String = chars.by_ref().take_while(|&c| c != ']').collect();
+            if chars.peek() == Some(&'(') {
+                for c in chars.by_ref() {
+                    if c == ')' {
+                        break;
+                    }
+                }
+            }
+            out.push_str(&label);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn severity_from_str(value: Option<&str>) -> Option<Severity> {
+    match value {
+        Some("critical") => Some(Severity::Critical),
+        Some("warn") | Some("warning") => Some(Severity::Warn),
+        Some("normal") | Some("ok") => Some(Severity::Nominal),
+        _ => None,
     }
 }
 
@@ -138,12 +195,12 @@ fn gauge_from_limit(item: &Value) -> Option<Gauge> {
         key: kind.to_string(),
         label,
         fraction: (percent / 100.0).clamp(0.0, 1.0),
-        used: None,
-        limit: None,
         unit: Unit::Percent,
-        detail: None,
         resets_at: parse_ts(item.get("resets_at")),
         trusted_reset: kind == "session",
+        api_severity: severity_from_str(item.get("severity").and_then(Value::as_str)),
+        is_active: item.get("is_active").and_then(Value::as_bool).unwrap_or(false),
+        ..Default::default()
     })
 }
 
@@ -160,12 +217,10 @@ fn gauges_from_top_level(json: &Value) -> Vec<Gauge> {
             key: key.to_string(),
             label: label.to_string(),
             fraction: (utilization / 100.0).clamp(0.0, 1.0),
-            used: None,
-            limit: None,
             unit: Unit::Percent,
-            detail: None,
             resets_at: parse_ts(obj.get("resets_at")),
             trusted_reset: trusted,
+            ..Default::default()
         })
     })
     .collect()
@@ -184,9 +239,7 @@ fn gauge_from_extra_usage(json: &Value) -> Option<Gauge> {
         used: extra.get("used_credits").and_then(Value::as_f64),
         limit: extra.get("monthly_limit").and_then(Value::as_f64),
         unit: Unit::Usd,
-        detail: None,
-        resets_at: None,
-        trusted_reset: false,
+        ..Default::default()
     })
 }
 
@@ -297,5 +350,6 @@ fn unavailable(error: String) -> Snapshot {
         details: Vec::new(),
         note: None,
         error: Some(error),
+        spend: None,
     }
 }

@@ -6,7 +6,7 @@
   <img src="assets/icon-macos.png" width="112" alt="tokenmaxxing — macOS" />
 </p>
 
-Native desktop meters for your LLM subscription token quotas. One product, two platform builds with deliberately distinct identities — a bolt cradled in a ¾-swept ring gauge, rendered electric on KDE and iridescent on macOS.
+Native desktop **usage dashboards** for your LLM subscriptions — live quota, ten months of local history, and a value-for-money readout, all on one fullscreen-capable screen. One product, two platform builds with deliberately distinct identities — electric on KDE, iridescent glass on macOS.
 
 | **KDE build** (Rust · GTK4 · libadwaita) | **macOS build** (SwiftUI · Liquid Glass) |
 | --- | --- |
@@ -28,11 +28,12 @@ So both builds **estimate** it by summing this machine's spend from the local `o
 
 ## Features (both builds)
 
-- **One ring per quota window** — every variable is visualized, never collapsed into a single number.
-- **Full detail block** — token totals, session counts, reset times, plan tier, data source, and live/estimated/offline state.
-- **Interface-scale selector** — resize the entire UI (100%–200%).
-- **Share-card export** — a purpose-drawn, high-resolution PNG for sharing (also headless via `--export`).
-- **Tray / menu-bar resident** with refresh, settings, and quit.
+- **Live quota, one ring per window** — 5-hour session, weekly, per-model weekly, overflow credits — coloured by headroom and by the API's *own* severity, with the **binding constraint** called out as the hero.
+- **Reset horizon** — every upcoming reset across both providers on one soonest-first timeline (trusted resets filled, estimated hollow).
+- **Full usage history** from local files — daily cost/token area charts, per-model / per-project / per-provider breakdowns, token composition, cache hit rate, and an hour-of-week activity heatmap, over ~10 months.
+- **Value returned** — what your subscription would have cost on the metered API (an estimate; the tokens are exact), plus a burn-rate/month projection.
+- **Screenshot utility** — export the whole dashboard *or* chosen segments to a high-resolution PNG, also copied to the clipboard (and headless via `--export`).
+- **Fullscreen-capable dashboard window** that reflows from ~1000px to 4K, resident in the tray / menu bar.
 
 ## Layout
 

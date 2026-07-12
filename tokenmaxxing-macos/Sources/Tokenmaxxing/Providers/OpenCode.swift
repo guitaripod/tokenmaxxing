@@ -4,7 +4,8 @@ import SQLite3
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 /// opencode-go has no usage API, so this estimates rolling-window spend from the
-/// local opencode.db against Go's dollar caps — clearly flagged as an estimate.
+/// local opencode.db against Go's dollar caps, and separately aggregates full
+/// usage history across every provider opencode has run.
 enum OpenCodeProvider {
     static let cap5h = 12.0
     static let cap7d = 30.0
@@ -35,6 +36,69 @@ enum OpenCodeProvider {
         } catch {
             return degraded("\(error)")
         }
+    }
+
+    /// Full local-history analytics across every provider opencode has run — the
+    /// paid Go gateway plus any free/local models — not just the capped Go spend.
+    static func usage() -> Usage {
+        guard FileManager.default.fileExists(atPath: Creds.opencodeDbPath.path) else {
+            return usageUnavailable("no opencode.db on this machine yet")
+        }
+        do {
+            let db = try Database(path: Creds.opencodeDbPath.path)
+            defer { db.close() }
+            let daily = try db.dailySeries()
+
+            let calendar = Calendar.current
+            let today = calendar.startOfDay(for: Date())
+            let cutoff7 = calendar.date(byAdding: .day, value: -6, to: today)!
+            let cutoff30 = calendar.date(byAdding: .day, value: -29, to: today)!
+            var windows = Windows()
+            var cost = 0.0
+            for d in daily {
+                cost += d.cost
+                if d.date == today { fold(&windows.today, d) }
+                if d.date >= cutoff7 { fold(&windows.seven, d) }
+                if d.date >= cutoff30 { fold(&windows.thirty, d) }
+            }
+
+            let tokens = try db.tokenBreakdown()
+            let (messages, sessions) = try db.counts()
+            var totals = Totals()
+            totals.costUSD = cost
+            totals.input = tokens.input
+            totals.output = tokens.output
+            totals.cacheWrite = tokens.cacheWrite
+            totals.cacheRead = tokens.cacheRead
+            totals.messages = messages
+            totals.sessions = sessions
+            totals.activeDays = Int64(daily.count)
+            totals.firstDay = daily.first?.date
+            totals.lastDay = daily.last?.date
+
+            return Usage(
+                scope: "opencode",
+                authority: .estimated,
+                source: "local opencode.db · all providers",
+                totals: totals,
+                windows: windows,
+                daily: daily,
+                byModel: try db.segments(groupExpr: "json_extract(data,'$.modelID')"),
+                byProject: [],
+                byProvider: try db.segments(groupExpr: "json_extract(data,'$.providerID')"),
+                tokens: tokens,
+                heatmap: try db.heatmap(),
+                error: nil
+            )
+        } catch {
+            return usageUnavailable("\(error)")
+        }
+    }
+
+    private static func fold(_ w: inout WinStat, _ d: DayPoint) {
+        w.cost += d.cost
+        w.tokens += d.tokens
+        w.messages += d.messages
     }
 
     private static func collect() throws -> ([Gauge], [Detail]) {
@@ -72,12 +136,24 @@ enum OpenCodeProvider {
             error: message
         )
     }
+
+    private static func usageUnavailable(_ message: String) -> Usage {
+        Usage(scope: "opencode", authority: .unavailable, source: "local opencode.db · unavailable", error: message)
+    }
 }
 
 /// Minimal read-only SQLite wrapper. Opened read/write so it can participate in
 /// WAL, but `query_only` forbids any mutation of the user's data.
 private final class Database {
     let handle: OpaquePointer
+
+    private let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = .current
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
 
     init(path: String) throws {
         var db: OpaquePointer?
@@ -129,12 +205,132 @@ private final class Database {
         sqlite3_bind_text(stmt, 1, provider, -1, SQLITE_TRANSIENT)
         guard sqlite3_step(stmt) == SQLITE_ROW else { return [] }
         return [
-            Detail(key: "All-time spend", value: String(format: "$%.2f", sqlite3_column_double(stmt, 0))),
-            Detail(key: "Sessions", value: "\(sqlite3_column_int64(stmt, 1))"),
-            Detail(key: "Tokens in", value: humanCount(sqlite3_column_int64(stmt, 2))),
-            Detail(key: "Tokens out", value: humanCount(sqlite3_column_int64(stmt, 3))),
-            Detail(key: "Cache read", value: humanCount(sqlite3_column_int64(stmt, 4))),
+            Detail(key: "Go spend (all-time)", value: String(format: "$%.2f", sqlite3_column_double(stmt, 0))),
+            Detail(key: "Go sessions", value: "\(sqlite3_column_int64(stmt, 1))"),
+            Detail(key: "Go tokens in", value: humanCount(sqlite3_column_int64(stmt, 2))),
+            Detail(key: "Go tokens out", value: humanCount(sqlite3_column_int64(stmt, 3))),
+            Detail(key: "Go cache read", value: humanCount(sqlite3_column_int64(stmt, 4))),
         ]
+    }
+
+    func dailySeries() throws -> [DayPoint] {
+        let sql = """
+        SELECT date(time_created/1000,'unixepoch','localtime') d,
+               COALESCE(SUM(json_extract(data,'$.cost')),0.0),
+               COALESCE(SUM(json_extract(data,'$.tokens.total')),0),
+               COUNT(*)
+        FROM message WHERE json_extract(data,'$.role')='assistant'
+        GROUP BY d ORDER BY d
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw QuotaError.message("daily query prepare failed")
+        }
+        defer { sqlite3_finalize(stmt) }
+        var out: [DayPoint] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let cstr = sqlite3_column_text(stmt, 0) else { continue }
+            guard let date = dayFormatter.date(from: String(cString: cstr)) else { continue }
+            out.append(DayPoint(
+                date: Calendar.current.startOfDay(for: date),
+                cost: sqlite3_column_double(stmt, 1),
+                tokens: max(0, sqlite3_column_int64(stmt, 2)),
+                messages: max(0, sqlite3_column_int64(stmt, 3))
+            ))
+        }
+        return out
+    }
+
+    func tokenBreakdown() throws -> TokenBreakdown {
+        let sql = """
+        SELECT COALESCE(SUM(json_extract(data,'$.tokens.input')),0),
+               COALESCE(SUM(json_extract(data,'$.tokens.output')),0),
+               COALESCE(SUM(json_extract(data,'$.tokens.cache.write')),0),
+               COALESCE(SUM(json_extract(data,'$.tokens.cache.read')),0),
+               COALESCE(SUM(json_extract(data,'$.tokens.reasoning')),0)
+        FROM message WHERE json_extract(data,'$.role')='assistant'
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw QuotaError.message("tokens query prepare failed")
+        }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return TokenBreakdown() }
+        return TokenBreakdown(
+            input: max(0, sqlite3_column_int64(stmt, 0)),
+            output: max(0, sqlite3_column_int64(stmt, 1)),
+            cacheWrite: max(0, sqlite3_column_int64(stmt, 2)),
+            cacheRead: max(0, sqlite3_column_int64(stmt, 3)),
+            reasoning: max(0, sqlite3_column_int64(stmt, 4))
+        )
+    }
+
+    func counts() throws -> (Int64, Int64) {
+        let messages = scalar("SELECT COUNT(*) FROM message WHERE json_extract(data,'$.role')='assistant'")
+        let sessions = scalar("SELECT COUNT(*) FROM session")
+        return (messages, sessions)
+    }
+
+    private func scalar(_ sql: String) -> Int64 {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+        return max(0, sqlite3_column_int64(stmt, 0))
+    }
+
+    /// Cost / token / message totals grouped by a JSON expression, sorted by tokens desc.
+    func segments(groupExpr: String) throws -> [Segment] {
+        let sql = """
+        SELECT COALESCE(\(groupExpr),'?') g,
+               COALESCE(SUM(json_extract(data,'$.cost')),0.0),
+               COALESCE(SUM(json_extract(data,'$.tokens.total')),0),
+               COUNT(*)
+        FROM message WHERE json_extract(data,'$.role')='assistant'
+        GROUP BY g ORDER BY 3 DESC
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw QuotaError.message("segment query prepare failed")
+        }
+        defer { sqlite3_finalize(stmt) }
+        var out: [Segment] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let label = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? "?"
+            out.append(Segment(
+                label: label,
+                cost: sqlite3_column_double(stmt, 1),
+                tokens: max(0, sqlite3_column_int64(stmt, 2)),
+                messages: max(0, sqlite3_column_int64(stmt, 3))
+            ))
+        }
+        return out
+    }
+
+    func heatmap() throws -> Heatmap {
+        let sql = """
+        SELECT CAST(strftime('%w', time_created/1000,'unixepoch','localtime') AS INTEGER),
+               CAST(strftime('%H', time_created/1000,'unixepoch','localtime') AS INTEGER),
+               COUNT(*)
+        FROM message WHERE json_extract(data,'$.role')='assistant'
+        GROUP BY 1, 2
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw QuotaError.message("heatmap query prepare failed")
+        }
+        defer { sqlite3_finalize(stmt) }
+        var heat = Heatmap()
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let sunDow = Int(sqlite3_column_int64(stmt, 0))
+            let hour = Int(sqlite3_column_int64(stmt, 1))
+            let count = Int(max(0, sqlite3_column_int64(stmt, 2)))
+            let weekday = (sunDow + 6) % 7 // strftime 0=Sun → Monday-based
+            guard (0..<7).contains(weekday), (0..<24).contains(hour) else { continue }
+            heat.counts[weekday][hour] += count
+            heat.max = max(heat.max, heat.counts[weekday][hour])
+        }
+        return heat
     }
 }
 
