@@ -1,22 +1,61 @@
 use crate::creds::{self, GrokCredentials};
 use crate::model::{Authority, Gauge, Snapshot, SpendInfo, Unit};
+use crate::providers::FetchResult;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::time::Duration;
 
 const CREDITS_URL: &str = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
 const BILLING_URL: &str = "https://cli-chat-proxy.grok.com/v1/billing";
 const CLIENT_VERSION: &str = "0.2.101";
 
-pub fn fetch(client: &reqwest::blocking::Client) -> Snapshot {
+/// Floor cooldown after a 429 so we never hammer the proxy back into the limit.
+const RATE_LIMIT_FLOOR: Duration = Duration::from_secs(5 * 60);
+/// Backoff after a non-429 failure (network, 5xx, …).
+const FAIL_COOLDOWN: Duration = Duration::from_secs(90);
+/// Normal spacing between successful live polls.
+pub const LIVE_INTERVAL: Duration = Duration::from_secs(2 * 60);
+
+pub fn fetch(client: &reqwest::blocking::Client) -> FetchResult {
     match load_and_fetch(client) {
-        Ok(snapshot) => snapshot,
-        Err(error) => unavailable(error),
+        Ok((credits_body, dollars_body, creds)) => {
+            save_usage_cache(&credits_body, dollars_body.as_deref());
+            FetchResult {
+                snapshot: parse(&credits_body, dollars_body.as_deref(), &creds),
+                cooldown: LIVE_INTERVAL,
+                fresh: true,
+            }
+        }
+        Err(FetchError::RateLimited { message, retry_after }) => {
+            let cooldown = retry_after.unwrap_or(RATE_LIMIT_FLOOR).max(RATE_LIMIT_FLOOR);
+            FetchResult {
+                snapshot: fallback_snapshot(&message, "rate limited"),
+                cooldown,
+                fresh: false,
+            }
+        }
+        Err(FetchError::Other(message)) => FetchResult {
+            snapshot: fallback_snapshot(&message, "cached"),
+            cooldown: FAIL_COOLDOWN,
+            fresh: false,
+        },
     }
 }
 
-fn load_and_fetch(client: &reqwest::blocking::Client) -> Result<Snapshot, String> {
-    let mut creds = creds::load_grok()?;
+enum FetchError {
+    RateLimited {
+        message: String,
+        retry_after: Option<Duration>,
+    },
+    Other(String),
+}
+
+fn load_and_fetch(
+    client: &reqwest::blocking::Client,
+) -> Result<(String, Option<String>, GrokCredentials), FetchError> {
+    let mut creds = creds::load_grok().map_err(FetchError::Other)?;
 
     if is_near_expiry(&creds) {
         if let Ok(fresh) = refresh(client, &creds) {
@@ -24,27 +63,42 @@ fn load_and_fetch(client: &reqwest::blocking::Client) -> Result<Snapshot, String
         }
     }
 
-    let (status, credits_body) = get_json(client, CREDITS_URL, &creds.access_token)?;
+    let (status, credits_body, retry_after) = get_json(client, CREDITS_URL, &creds.access_token)?;
     if status == 401 || status == 403 {
-        let fresh = refresh(client, &creds)?;
-        let (retry_status, retry_body) = get_json(client, CREDITS_URL, &fresh.access_token)?;
-        if retry_status != 200 {
-            return Err(format!("billing endpoint returned {retry_status} after refresh"));
-        }
-        let dollars = get_json(client, BILLING_URL, &fresh.access_token)
-            .ok()
-            .filter(|(s, _)| *s == 200)
-            .map(|(_, b)| b);
-        return Ok(parse(&retry_body, dollars.as_deref(), &fresh));
+        let fresh = refresh(client, &creds).map_err(FetchError::Other)?;
+        let (retry_status, retry_body, retry_after) =
+            get_json(client, CREDITS_URL, &fresh.access_token)?;
+        let body = classify_status(retry_status, retry_body, retry_after)?;
+        let dollars = fetch_dollars(client, &fresh.access_token);
+        return Ok((body, dollars, fresh));
     }
-    if status != 200 {
-        return Err(format!("billing endpoint returned {status}"));
-    }
-    let dollars = get_json(client, BILLING_URL, &creds.access_token)
+    let body = classify_status(status, credits_body, retry_after)?;
+    let dollars = fetch_dollars(client, &creds.access_token);
+    Ok((body, dollars, creds))
+}
+
+fn fetch_dollars(client: &reqwest::blocking::Client, token: &str) -> Option<String> {
+    get_json(client, BILLING_URL, token)
         .ok()
-        .filter(|(s, _)| *s == 200)
-        .map(|(_, b)| b);
-    Ok(parse(&credits_body, dollars.as_deref(), &creds))
+        .filter(|(s, _, _)| *s == 200)
+        .map(|(_, b, _)| b)
+}
+
+fn classify_status(
+    status: u16,
+    body: String,
+    retry_after: Option<Duration>,
+) -> Result<String, FetchError> {
+    if status == 200 {
+        return Ok(body);
+    }
+    if status == 429 {
+        return Err(FetchError::RateLimited {
+            message: "billing endpoint rate limited (HTTP 429)".into(),
+            retry_after,
+        });
+    }
+    Err(FetchError::Other(format!("billing endpoint returned {status}")))
 }
 
 fn is_near_expiry(creds: &GrokCredentials) -> bool {
@@ -55,7 +109,7 @@ fn get_json(
     client: &reqwest::blocking::Client,
     url: &str,
     token: &str,
-) -> Result<(u16, String), String> {
+) -> Result<(u16, String, Option<Duration>), FetchError> {
     let response = client
         .get(url)
         .header("authorization", format!("Bearer {token}"))
@@ -63,10 +117,70 @@ fn get_json(
         .header("x-grok-client-version", CLIENT_VERSION)
         .header("x-grok-client-mode", "cli")
         .send()
-        .map_err(|e| format!("request failed: {e}"))?;
+        .map_err(|e| FetchError::Other(format!("request failed: {e}")))?;
     let status = response.status().as_u16();
+    let retry_after = parse_retry_after(response.headers().get("retry-after"));
     let body = response.text().unwrap_or_default();
-    Ok((status, body))
+    Ok((status, body, retry_after))
+}
+
+fn parse_retry_after(value: Option<&reqwest::header::HeaderValue>) -> Option<Duration> {
+    let raw = value?.to_str().ok()?.trim();
+    if let Ok(seconds) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(seconds.max(1)));
+    }
+    // HTTP-date form is rare for this endpoint; ignore if not integer seconds.
+    None
+}
+
+/// Prefer an on-disk last-good body so the rings stay on screen through 429s
+/// and brief outages. Only shows OFFLINE when nothing has ever succeeded on
+/// this machine.
+fn fallback_snapshot(message: &str, reason: &str) -> Snapshot {
+    if let Some((credits, dollars)) = load_usage_cache() {
+        if let Ok(creds) = creds::load_grok() {
+            let mut snap = parse(&credits, dollars.as_deref(), &creds);
+            snap.source = format!("cli-chat-proxy.grok.com · {reason}");
+            snap.note = Some(format!("Showing last good reading — {message}"));
+            snap.error = None;
+            return snap;
+        }
+    }
+    unavailable(message.to_string())
+}
+
+fn cache_path() -> PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| creds::home().join(".config"));
+    base.join("tokenmaxxing/grok_usage_cache.json")
+}
+
+fn save_usage_cache(credits_body: &str, dollars_body: Option<&str>) {
+    let path = cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let payload = serde_json::json!({
+        "saved_at_ms": Utc::now().timestamp_millis(),
+        "credits": credits_body,
+        "dollars": dollars_body,
+    });
+    if let Ok(bytes) = serde_json::to_vec_pretty(&payload) {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, bytes).is_ok() {
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
+fn load_usage_cache() -> Option<(String, Option<String>)> {
+    let raw = std::fs::read_to_string(cache_path()).ok()?;
+    let json: Value = serde_json::from_str(&raw).ok()?;
+    let credits = json.get("credits")?.as_str()?.to_string();
+    let dollars = json.get("dollars").and_then(Value::as_str).map(str::to_string);
+    Some((credits, dollars))
 }
 
 fn parse(credits_body: &str, dollars_body: Option<&str>, creds: &GrokCredentials) -> Snapshot {

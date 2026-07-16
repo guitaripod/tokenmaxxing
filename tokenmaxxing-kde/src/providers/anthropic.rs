@@ -1,5 +1,6 @@
 use crate::creds::{self, ClaudeCredentials};
 use crate::model::{Authority, Gauge, Severity, Snapshot, SpendInfo, Unit};
+use crate::providers::FetchResult;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
@@ -17,14 +18,6 @@ const RATE_LIMIT_FLOOR: Duration = Duration::from_secs(5 * 60);
 const FAIL_COOLDOWN: Duration = Duration::from_secs(90);
 /// Normal spacing between successful live polls.
 pub const LIVE_INTERVAL: Duration = Duration::from_secs(2 * 60);
-
-/// Result of a Claude usage fetch, including how long the worker should wait
-/// before hitting the endpoint again.
-pub struct FetchResult {
-    pub snapshot: Snapshot,
-    pub cooldown: Duration,
-    pub fresh: bool,
-}
 
 pub fn fetch(client: &reqwest::blocking::Client) -> FetchResult {
     match load_and_fetch(client) {

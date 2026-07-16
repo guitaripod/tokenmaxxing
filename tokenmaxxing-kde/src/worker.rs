@@ -15,7 +15,6 @@ pub enum FromUi {
 }
 
 const TICK: Duration = Duration::from_secs(30);
-const GROK_EVERY: u64 = 4;
 const USER_AGENT: &str = concat!(
     "tokenmaxxing/",
     env!("CARGO_PKG_VERSION"),
@@ -29,48 +28,39 @@ pub fn spawn(to_ui: async_channel::Sender<ToUi>, from_ui: Receiver<FromUi>) {
         .expect("spawn worker thread");
 }
 
-/// Poll local usage every tick. Live Claude is paced by its own cooldown
-/// (2 min normally, ≥5 min after HTTP 429). Grok stays on the mild 4-tick
-/// cadence. Manual refresh clears cooldowns for one try.
+/// Poll local usage every tick. Each live endpoint is paced by its own
+/// cooldown (2 min normally, ≥5 min after HTTP 429; both seed from their disk
+/// caches on failure). Manual refresh clears cooldowns for one try.
 fn run(to_ui: &async_channel::Sender<ToUi>, from_ui: &Receiver<FromUi>) {
     let client = build_client();
     let mut claude_history = ClaudeHistory::new();
     let mut grok_history = GrokHistory::new();
-    let mut tick: u64 = 0;
 
-    let mut claude = LiveCache::new();
-    // Seed from disk cache immediately so the first paint has rings even when
-    // Anthropic is currently 429'ing.
+    let mut claude = LiveCache::new(claude_placeholder);
+    let mut grok = LiveCache::new(grok_placeholder);
+    // Seed from disk caches immediately so the first paint has rings even
+    // when an endpoint is currently 429'ing.
     {
         let result = anthropic::fetch(&client);
         claude.apply(result.snapshot, result.cooldown, result.fresh);
+        let result = grok::fetch(&client);
+        grok.apply(result.snapshot, result.cooldown, result.fresh);
     }
-
-    let mut cached_grok: Option<Snapshot> = None;
-    let mut last_good_grok: Option<Snapshot> = None;
-    let mut grok_healthy = true;
 
     loop {
         if claude.due() {
             let result = anthropic::fetch(&client);
             claude.apply(result.snapshot, result.cooldown, result.fresh);
         }
-
-        let grok_due =
-            cached_grok.is_none() || if grok_healthy { tick % GROK_EVERY == 0 } else { true };
-        let grok_quota = if grok_due {
-            let (snapshot, fresh) = fetch_grok_live(&client, &mut last_good_grok);
-            grok_healthy = fresh;
-            cached_grok = Some(snapshot.clone());
-            snapshot
-        } else {
-            cached_grok.clone().expect("grok snapshot cached")
-        };
+        if grok.due() {
+            let result = grok::fetch(&client);
+            grok.apply(result.snapshot, result.cooldown, result.fresh);
+        }
 
         let dashboard = Dashboard {
             claude_quota: claude.snapshot(),
             claude_usage: claude_history.scan(),
-            grok_quota,
+            grok_quota: grok.snapshot(),
             grok_usage: grok_history.scan(),
             opencode_quota: opencode::fetch(),
             opencode_usage: opencode::usage(),
@@ -83,15 +73,13 @@ fn run(to_ui: &async_channel::Sender<ToUi>, from_ui: &Receiver<FromUi>) {
         {
             break;
         }
-        tick = tick.wrapping_add(1);
 
         match from_ui.recv_timeout(TICK) {
             Ok(FromUi::RefreshNow) => {
-                tick = 0;
-                // One more attempt now; if Anthropic is still 429, fetch() will
-                // re-impose the floor cooldown itself.
+                // One more attempt now; if an endpoint is still 429, fetch()
+                // will re-impose the floor cooldown itself.
                 claude.force_due();
-                cached_grok = None;
+                grok.force_due();
             }
             Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
@@ -102,13 +90,15 @@ fn run(to_ui: &async_channel::Sender<ToUi>, from_ui: &Receiver<FromUi>) {
 struct LiveCache {
     current: Option<Snapshot>,
     next_fetch: Instant,
+    placeholder: fn() -> Snapshot,
 }
 
 impl LiveCache {
-    fn new() -> Self {
+    fn new(placeholder: fn() -> Snapshot) -> Self {
         Self {
             current: None,
             next_fetch: Instant::now(),
+            placeholder,
         }
     }
 
@@ -138,43 +128,37 @@ impl LiveCache {
     }
 
     fn snapshot(&self) -> Snapshot {
-        self.current.clone().unwrap_or_else(|| Snapshot {
-            provider_id: "anthropic".into(),
-            provider_name: "Claude".into(),
-            subtitle: "Claude".into(),
-            authority: Authority::Unavailable,
-            source: "api.anthropic.com · starting".into(),
-            gauges: Vec::new(),
-            details: Vec::new(),
-            note: None,
-            error: Some("waiting for first Claude reading".into()),
-            spend: None,
-        })
+        self.current.clone().unwrap_or_else(self.placeholder)
     }
 }
 
-fn fetch_grok_live(
-    client: &reqwest::blocking::Client,
-    last_good: &mut Option<Snapshot>,
-) -> (Snapshot, bool) {
-    let mut last_fail: Option<Snapshot> = None;
-    for attempt in 0..2 {
-        let snapshot = grok::fetch(client);
-        if snapshot.authority == Authority::Live {
-            *last_good = Some(snapshot.clone());
-            return (snapshot, true);
-        }
-        last_fail = Some(snapshot);
-        if attempt == 0 {
-            std::thread::sleep(Duration::from_secs(2));
-        }
+fn claude_placeholder() -> Snapshot {
+    Snapshot {
+        provider_id: "anthropic".into(),
+        provider_name: "Claude".into(),
+        subtitle: "Claude".into(),
+        authority: Authority::Unavailable,
+        source: "api.anthropic.com · starting".into(),
+        gauges: Vec::new(),
+        details: Vec::new(),
+        note: None,
+        error: Some("waiting for first Claude reading".into()),
+        spend: None,
     }
-    match last_good.clone() {
-        Some(mut good) => {
-            good.source = "cli-chat-proxy.grok.com · live (cached, retrying)".into();
-            (good, false)
-        }
-        None => (last_fail.expect("at least one fetch attempt"), false),
+}
+
+fn grok_placeholder() -> Snapshot {
+    Snapshot {
+        provider_id: "xai".into(),
+        provider_name: "Grok".into(),
+        subtitle: "Grok".into(),
+        authority: Authority::Unavailable,
+        source: "cli-chat-proxy.grok.com · starting".into(),
+        gauges: Vec::new(),
+        details: Vec::new(),
+        note: None,
+        error: Some("waiting for first Grok reading".into()),
+        spend: None,
     }
 }
 
@@ -185,7 +169,7 @@ pub fn snapshot_once() -> Dashboard {
     Dashboard {
         claude_quota: claude.snapshot,
         claude_usage: ClaudeHistory::new().scan(),
-        grok_quota: grok::fetch(&client),
+        grok_quota: grok::fetch(&client).snapshot,
         grok_usage: GrokHistory::new().scan(),
         opencode_quota: opencode::fetch(),
         opencode_usage: opencode::usage(),
