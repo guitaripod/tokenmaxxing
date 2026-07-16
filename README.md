@@ -10,8 +10,14 @@ Native desktop **usage dashboards** for your LLM subscriptions — live quota, l
 
 | **KDE build** (Rust · GTK4 · libadwaita) | **macOS build** (SwiftUI · Liquid Glass) |
 | --- | --- |
-| Lives in the system tray. Compact limits popover + full dashboard. | Lives in the menu bar. Compact status + full dashboard window. |
+| System tray · compact limits + full dashboard | Menu bar · compact limits + full dashboard |
 | ![tokenmaxxing on KDE](assets/tokenmaxxing-kde-sharecard.png) | ![tokenmaxxing on macOS](assets/tokenmaxxing-macos-sharecard.png) |
+
+Full analytics dashboards (same data, both platforms):
+
+| KDE | macOS |
+| --- | --- |
+| ![KDE full dashboard](assets/tokenmaxxing-kde-dashboard.png) | ![macOS full dashboard](assets/tokenmaxxing-macos-dashboard.png) |
 
 Both render the same quota model for three subscriptions, in order:
 
@@ -47,7 +53,7 @@ tokenmaxxing/
 ├── tokenmaxxing-kde/     Rust GTK4 build for KDE Plasma 6
 ├── tokenmaxxing-macos/   SwiftUI menu-bar build for macOS 26+
 ├── docs/                 data-sources.md, model.md
-└── assets/               share-card renders
+└── assets/               compact limits + full dashboard share renders
 ```
 
 ## Build

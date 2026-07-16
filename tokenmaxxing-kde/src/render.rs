@@ -1346,7 +1346,10 @@ fn paint_export_footer(cr: &Context, width: f64, total_h: f64, footer_h: f64, co
     mono(cr, if compact { 10.5 } else { 11.5 }, FontWeight::Normal);
     set(cr, theme::muted());
     if compact {
-        text_left(cr, "tokenmaxxing · current limits", MARGIN, y);
+        text_left(cr, "github.com/guitaripod/tokenmaxxing", MARGIN, y);
+        let v = concat!("tokenmaxxing ", env!("CARGO_PKG_VERSION"));
+        let vw = cr.text_extents(v).map(|e| e.width()).unwrap_or(0.0);
+        text_left(cr, v, width - MARGIN - vw, y);
     } else {
         text_left(cr, "github.com/guitaripod/tokenmaxxing", MARGIN, y);
         let v = concat!(

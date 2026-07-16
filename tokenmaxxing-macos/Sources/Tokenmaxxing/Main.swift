@@ -5,11 +5,18 @@ import AppKit
 struct Entry {
     static func main() {
         let arguments = CommandLine.arguments
+        if let index = arguments.firstIndex(of: "--export-limits") {
+            let path = (arguments.count > index + 1 && !arguments[index + 1].hasPrefix("-"))
+                ? arguments[index + 1]
+                : nil
+            Headless.export(to: path, limitsOnly: true)
+            return
+        }
         if let index = arguments.firstIndex(of: "--export") {
             let path = (arguments.count > index + 1 && !arguments[index + 1].hasPrefix("-"))
                 ? arguments[index + 1]
                 : nil
-            Headless.export(to: path)
+            Headless.export(to: path, limitsOnly: false)
             return
         }
         if let index = arguments.firstIndex(of: "--icon") {
@@ -21,9 +28,9 @@ struct Entry {
     }
 }
 
-/// One-shot render used by `Tokenmaxxing --export <path>` and for headless verification.
+/// One-shot render used by `Tokenmaxxing --export` / `--export-limits` and for headless verification.
 enum Headless {
-    static func export(to path: String?) {
+    static func export(to path: String?, limitsOnly: Bool) {
         let box = DashboardBox()
         let semaphore = DispatchSemaphore(value: 0)
         Task.detached {
@@ -52,22 +59,23 @@ enum Headless {
                 FileHandle.standardError.write(Data("tokenmaxxing: build failed\n".utf8))
                 return
             }
-            let renderer = ImageRenderer(content: ExportView(dashboard: dashboard, sections: buildSections(dashboard)))
-            renderer.scale = 2.0
-            guard let image = renderer.nsImage,
-                  let tiff = image.tiffRepresentation,
-                  let bitmap = NSBitmapImageRep(data: tiff),
-                  let png = bitmap.representation(using: .png, properties: [:])
-            else {
-                FileHandle.standardError.write(Data("tokenmaxxing: render failed\n".utf8))
-                return
+            let url: URL?
+            if limitsOnly {
+                url = DashboardExport.exportLimits(
+                    dashboard: dashboard,
+                    to: path.map { URL(fileURLWithPath: $0) }
+                )
+            } else {
+                url = DashboardExport.export(
+                    dashboard: dashboard,
+                    sections: buildSections(dashboard),
+                    to: path.map { URL(fileURLWithPath: $0) }
+                )
             }
-            let url = URL(fileURLWithPath: path ?? DashboardExport.defaultOutput().path)
-            do {
-                try png.write(to: url)
+            if let url {
                 print(url.path)
-            } catch {
-                FileHandle.standardError.write(Data("tokenmaxxing: write failed: \(error)\n".utf8))
+            } else {
+                FileHandle.standardError.write(Data("tokenmaxxing: render failed\n".utf8))
             }
         }
     }

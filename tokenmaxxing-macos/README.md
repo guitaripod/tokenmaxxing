@@ -24,7 +24,8 @@ The app ships **un-sandboxed on purpose** — the App Sandbox blocks reading `~/
 The menu-bar **Export screenshot** action, and the dashboard's screenshot sheet, render the dashboard (or the chosen sections) to a high-resolution PNG via `ImageRenderer`, copy it to the clipboard (PNG + image), and reveal it in Finder (`~/Pictures`). Exports carry a subtle `tokenmaxxing <version> · github.com/guitaripod/tokenmaxxing` credit. Headless:
 
 ```sh
-Tokenmaxxing --export [path.png]     # renders the whole dashboard to a PNG and exits
+Tokenmaxxing --export [path.png]          # full dashboard
+Tokenmaxxing --export-limits [path.png]   # compact limits view (Claude → Grok → opencode)
 ```
 
 ## Data
