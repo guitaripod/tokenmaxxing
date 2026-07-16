@@ -2,27 +2,29 @@ use crate::theme::{self, Rgb};
 use gtk::cairo::{Context, FontSlant, FontWeight, LineCap};
 use std::f64::consts::PI;
 
-/// Draw a circular quota ring with an electric glow and a centered percentage.
+/// Draw a circular quota ring with a restrained glow and a centered percentage.
 pub fn draw_ring(cr: &Context, width: i32, height: i32, fraction: f64, color: Rgb, center: &str, sub: &str) {
     let (w, h) = (f64::from(width), f64::from(height));
     let (cx, cy) = (w / 2.0, h / 2.0);
     let extent = w.min(h);
-    let radius = extent / 2.0 - extent * 0.11;
-    let stroke = radius * 0.22;
+    let radius = extent / 2.0 - extent * 0.12;
+    let stroke = (radius * 0.16).clamp(3.2, 8.0);
     let start = -PI / 2.0;
     let sweep = fraction.clamp(0.0, 1.0) * 2.0 * PI;
 
     cr.set_line_cap(LineCap::Round);
     cr.new_path();
 
+    // Track — softer than full border so rings don't compete with card chrome.
     cr.set_line_width(stroke);
-    set(cr, theme::TRACK);
+    set_alpha(cr, theme::track(), if theme::is_dark() { 0.85 } else { 0.95 });
     cr.arc(cx, cy, radius, 0.0, 2.0 * PI);
     let _ = cr.stroke();
 
     if sweep > 0.0 {
-        cr.set_line_width(stroke * 2.1);
-        set_alpha(cr, color, 0.16);
+        let glow = if theme::is_dark() { 0.14 } else { 0.10 };
+        cr.set_line_width(stroke * 1.7);
+        set_alpha(cr, color, glow);
         cr.arc(cx, cy, radius, start, start + sweep);
         let _ = cr.stroke();
 
@@ -33,27 +35,28 @@ pub fn draw_ring(cr: &Context, width: i32, height: i32, fraction: f64, color: Rg
     }
 
     cr.select_font_face("monospace", FontSlant::Normal, FontWeight::Bold);
-    cr.set_font_size(radius * 0.46);
-    set(cr, theme::TEXT);
-    centered_text(cr, center, cx, cy - radius * 0.05);
+    cr.set_font_size((radius * 0.40).clamp(11.0, 20.0));
+    set(cr, theme::text());
+    centered_text(cr, center, cx, cy - radius * 0.04);
 
-    cr.select_font_face("sans-serif", FontSlant::Normal, FontWeight::Normal);
-    cr.set_font_size(radius * 0.17);
-    set(cr, theme::MUTED);
-    centered_text(cr, sub, cx, cy + radius * 0.38);
+    if !sub.is_empty() {
+        cr.select_font_face("sans-serif", FontSlant::Normal, FontWeight::Normal);
+        cr.set_font_size(radius * 0.17);
+        set(cr, theme::muted());
+        centered_text(cr, sub, cx, cy + radius * 0.38);
+    }
 }
 
-/// Draw the tokenmaxxing mark — a lime current-arc wrapping a cyan bolt — filling a
-/// `size`×`size` box anchored at the origin. Shared by the tray icon and the
-/// share card so the brand stays identical everywhere.
+/// Draw the tokenmaxxing mark — arc + bolt — filling a `size`×`size` box.
 pub fn draw_logo(cr: &Context, size: f64) {
     cr.set_line_cap(LineCap::Round);
-    cr.set_line_width(size * 0.07);
-    cr.set_source_rgba(theme::LIME.0, theme::LIME.1, theme::LIME.2, 0.85);
+    cr.set_line_width(size * 0.065);
+    // Arc in Claude terracotta, bolt in warm white / ink.
+    set_alpha(cr, theme::CYAN, 0.90);
     cr.arc(size * 0.5, size * 0.5, size * 0.4, PI * 0.62, PI * 2.55);
     let _ = cr.stroke();
 
-    set(cr, theme::CYAN);
+    set(cr, theme::text());
     let bolt = [
         (0.585, 0.12),
         (0.34, 0.55),

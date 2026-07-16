@@ -1,6 +1,6 @@
 [package]
 name = "tokenmaxxing"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Electric LLM-quota meter for the KDE Plasma system tray"
 license = "GPL-3.0-or-later"

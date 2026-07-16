@@ -29,11 +29,15 @@ enum Headless {
         Task.detached {
             let anthropic = await AnthropicProvider.fetch()
             let claudeUsage = await ClaudeHistory().scan()
+            let grokQuota = await GrokProvider.fetch()
+            let grokUsage = await GrokHistory().scan()
             let opencodeQuota = OpenCodeProvider.fetch()
             let opencodeUsage = OpenCodeProvider.usage()
             box.dashboard = Dashboard(
-                claudeQuota: anthropic,
+                claudeQuota: anthropic.snapshot,
                 claudeUsage: claudeUsage,
+                grokQuota: grokQuota,
+                grokUsage: grokUsage,
                 opencodeQuota: opencodeQuota,
                 opencodeUsage: opencodeUsage,
                 generatedAt: Date()

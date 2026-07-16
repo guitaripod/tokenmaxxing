@@ -106,10 +106,12 @@ struct SpendInfo {
     var disclaimer: String?
 }
 
-/// The whole dashboard for one refresh.
+/// The whole dashboard for one refresh. Order: Claude → Grok → opencode.
 struct Dashboard {
     var claudeQuota: Snapshot
     var claudeUsage: Usage
+    var grokQuota: Snapshot
+    var grokUsage: Usage
     var opencodeQuota: Snapshot
     var opencodeUsage: Usage
     var generatedAt: Date

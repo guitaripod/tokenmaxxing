@@ -37,7 +37,10 @@ struct Inner {
     full: Surface,
     state: Rc<RenderState>,
     provider: gtk::CssProvider,
+    /// Toasts for the full dashboard window.
     toast: adw::ToastOverlay,
+    /// Toasts for the compact limits window (screenshot confirmations, …).
+    limits_toast: adw::ToastOverlay,
     action_bar: gtk::Revealer,
     selected_btn: gtk::Button,
     config: RefCell<config::Config>,
@@ -55,6 +58,10 @@ impl AppUi {
             selected: RefCell::new(HashSet::new()),
         });
 
+        // Sync canvas palette to the desktop light/dark preference.
+        let style = adw::StyleManager::default();
+        theme::set_dark(style.is_dark());
+
         let provider = gtk::CssProvider::new();
         if let Some(display) = gtk::gdk::Display::default() {
             gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -67,9 +74,11 @@ impl AppUi {
             window: adw::ApplicationWindow::builder()
                 .application(app)
                 .title("tokenmaxxing")
-                .default_width(cfg.limits_width.unwrap_or(640))
-                .default_height(cfg.limits_height.unwrap_or(560))
-                .width_request(400)
+                .default_width(config::LIMITS_WIDTH)
+                .default_height(config::LIMITS_HEIGHT)
+                .width_request(config::LIMITS_WIDTH)
+                .height_request(config::LIMITS_HEIGHT)
+                .resizable(false)
                 .build(),
             subtitle: adw::WindowTitle::new("tokenmaxxing", "current limits"),
             plan: Rc::new(RefCell::new(None)),
@@ -84,6 +93,8 @@ impl AppUi {
         limits_header.set_title_widget(Some(&limits.subtitle));
         let limits_refresh = flat_icon("view-refresh-symbolic", "Refresh now");
         limits_header.pack_start(&limits_refresh);
+        let limits_shot = flat_icon("camera-photo-symbolic", "Screenshot this window");
+        limits_header.pack_end(&limits_shot);
         let open_full = gtk::Button::with_label("Full dashboard");
         open_full.add_css_class("suggested-action");
         open_full.set_tooltip_text(Some("Open the full usage dashboard"));
@@ -93,7 +104,9 @@ impl AppUi {
         let limits_toolbar = adw::ToolbarView::new();
         limits_toolbar.add_top_bar(&limits_header);
         limits_toolbar.set_content(Some(&limits_scroll));
-        limits.window.set_content(Some(&limits_toolbar));
+        let limits_toast = adw::ToastOverlay::new();
+        limits_toast.set_child(Some(&limits_toolbar));
+        limits.window.set_content(Some(&limits_toast));
 
         // ---- full dashboard window -----------------------------------------
         let full_canvas = new_canvas();
@@ -112,6 +125,8 @@ impl AppUi {
             scope: Scope::Full,
         };
         full.window.add_css_class("tokenmaxxing");
+        // Never auto-show: full dashboard only appears when the user asks.
+        full.window.set_visible(false);
         install_draw(&full.canvas, &state, &full.plan, true, Scope::Full);
 
         let full_header = adw::HeaderBar::new();
@@ -149,6 +164,7 @@ impl AppUi {
             state,
             provider,
             toast,
+            limits_toast,
             action_bar,
             selected_btn,
             config: RefCell::new(cfg),
@@ -156,12 +172,41 @@ impl AppUi {
         }));
 
         settings.set_popover(Some(&ui.build_settings_popover()));
-        ui.wire(&limits_refresh, &open_full, &full_refresh, &shot, &fullscreen);
+        ui.wire(
+            &limits_refresh,
+            &limits_shot,
+            &open_full,
+            &full_refresh,
+            &shot,
+            &fullscreen,
+        );
         ui.wire_actions(&actions);
+        ui.wire_color_scheme();
         ui
     }
 
-    fn wire(&self, limits_refresh: &gtk::Button, open_full: &gtk::Button, full_refresh: &gtk::Button, shot: &gtk::Button, fullscreen: &gtk::Button) {
+    /// Follow the desktop light/dark preference live — CSS chrome + canvas palette.
+    fn wire_color_scheme(&self) {
+        let style = adw::StyleManager::default();
+        let ui = self.clone();
+        style.connect_dark_notify(move |sm| {
+            theme::set_dark(sm.is_dark());
+            let scale = ui.0.state.scale.get();
+            ui.0.provider.load_from_string(&theme::stylesheet(scale));
+            ui.relayout(Scope::Limits);
+            ui.relayout(Scope::Full);
+        });
+    }
+
+    fn wire(
+        &self,
+        limits_refresh: &gtk::Button,
+        limits_shot: &gtk::Button,
+        open_full: &gtk::Button,
+        full_refresh: &gtk::Button,
+        shot: &gtk::Button,
+        fullscreen: &gtk::Button,
+    ) {
         for refresh in [limits_refresh, full_refresh] {
             let ui = self.clone();
             refresh.connect_clicked(move |_| {
@@ -170,6 +215,9 @@ impl AppUi {
                 ui.0.full.subtitle.set_subtitle("refreshing…");
             });
         }
+
+        let ui = self.clone();
+        limits_shot.connect_clicked(move |_| ui.export_limits_screenshot());
 
         let ui = self.clone();
         open_full.connect_clicked(move |_| ui.0.full.window.present());
@@ -244,6 +292,15 @@ impl AppUi {
         });
         box_.append(&export);
 
+        let grok_usage = gtk::Button::with_label("Open Grok usage");
+        grok_usage.add_css_class("flat");
+        let grok_popover = popover.clone();
+        grok_usage.connect_clicked(move |_| {
+            grok_popover.popdown();
+            open_url("https://grok.com/?_s=usage");
+        });
+        box_.append(&grok_usage);
+
         let console = gtk::Button::with_label("Open opencode console");
         console.add_css_class("flat");
         let console_popover = popover.clone();
@@ -257,19 +314,32 @@ impl AppUi {
         popover
     }
 
+    /// Show the compact limits window only — fixed size, bottom-right of the
+    /// active monitor. The full dashboard stays hidden until asked for.
     pub fn present(&self) {
-        self.0.limits.window.present();
+        self.0.full.window.set_visible(false);
+        self.present_limits();
     }
 
     /// Tray click toggles the compact limits window.
     pub fn toggle(&self) {
         let window = self.0.limits.window.clone();
         if window.is_visible() {
-            self.save_window_size(&window, true);
             window.set_visible(false);
         } else {
-            window.present();
+            self.present_limits();
         }
+    }
+
+    fn present_limits(&self) {
+        let window = &self.0.limits.window;
+        window.set_default_size(config::LIMITS_WIDTH, config::LIMITS_HEIGHT);
+        window.set_size_request(config::LIMITS_WIDTH, config::LIMITS_HEIGHT);
+        window.present();
+        // Wayland clients can't set absolute positions — ask KWin after map.
+        glib::timeout_add_local_once(std::time::Duration::from_millis(80), || {
+            place_limits_bottom_right();
+        });
     }
 
     /// Hide (instead of quit) when either window is closed — the app stays live
@@ -278,16 +348,17 @@ impl AppUi {
         for (surface, is_limits) in [(&self.0.limits, true), (&self.0.full, false)] {
             let ui = self.clone();
             surface.window.connect_close_request(move |window| {
-                ui.save_window_size(window, is_limits);
+                if !is_limits {
+                    ui.save_dashboard_size(window);
+                }
                 window.set_visible(false);
                 glib::Propagation::Stop
             });
         }
     }
 
-    /// Remember the window's size (unless maximized/fullscreen) so it reopens at
-    /// exactly the size the user left it.
-    fn save_window_size(&self, window: &adw::ApplicationWindow, is_limits: bool) {
+    /// Remember the full dashboard size (mini window size is fixed).
+    fn save_dashboard_size(&self, window: &adw::ApplicationWindow) {
         if window.is_maximized() || window.is_fullscreen() {
             return;
         }
@@ -296,13 +367,8 @@ impl AppUi {
             return;
         }
         let mut cfg = self.0.config.borrow_mut();
-        if is_limits {
-            cfg.limits_width = Some(w);
-            cfg.limits_height = Some(h);
-        } else {
-            cfg.dashboard_width = Some(w);
-            cfg.dashboard_height = Some(h);
-        }
+        cfg.dashboard_width = Some(w);
+        cfg.dashboard_height = Some(h);
         config::save(&cfg);
     }
 
@@ -408,24 +474,62 @@ impl AppUi {
     fn export(&self, selected: Option<HashSet<String>>) {
         let dash = self.0.state.dashboard.borrow();
         let Some(dash) = dash.as_ref() else {
-            self.notify("Nothing to export yet — still loading");
+            self.notify_full("Nothing to export yet — still loading");
             return;
         };
         let path = render::default_output();
         match render::export(dash, 1500.0, 2.0, selected.as_ref(), Scope::Full, &path) {
-            Ok(()) => {
-                if let Ok(texture) = gtk::gdk::Texture::from_filename(&path) {
-                    if let Some(display) = gtk::gdk::Display::default() {
-                        display.clipboard().set_texture(&texture);
-                    }
-                }
-                let toast = adw::Toast::new(&format!("Saved {} · copied to clipboard", path.display()));
-                toast.set_button_label(Some("Open"));
-                let opened = path.clone();
-                toast.connect_button_clicked(move |_| open_url(&opened.to_string_lossy()));
-                self.0.toast.add_toast(toast);
-            }
-            Err(error) => self.notify(&format!("Export failed: {error}")),
+            Ok(()) => self.finish_screenshot(&path, true),
+            Err(error) => self.notify_full(&format!("Export failed: {error}")),
+        }
+    }
+
+    /// One-shot screenshot of the compact limits view — same layout width and
+    /// UI scale as the live canvas (no wider re-layout, no export chrome).
+    fn export_limits_screenshot(&self) {
+        let dash = self.0.state.dashboard.borrow();
+        let Some(dash) = dash.as_ref() else {
+            self.notify_limits("Nothing to export yet — still loading");
+            return;
+        };
+        let path = render::default_output_named("limits");
+        let ui_scale = self.0.state.scale.get();
+        // Prefer the plan width the live canvas last laid out with; fall back to
+        // canvas allocation / ui_scale (same formula as install_draw).
+        let plan_width = self
+            .0
+            .limits
+            .plan
+            .borrow()
+            .as_ref()
+            .map(|(w, _)| *w)
+            .unwrap_or_else(|| {
+                let canvas_w = self.0.limits.canvas.width().max(1) as f64;
+                (canvas_w / ui_scale).max(200.0)
+            });
+        match render::export_live_view(dash, plan_width, ui_scale, Scope::Limits, &path, 2.0) {
+            Ok(()) => self.finish_screenshot(&path, false),
+            Err(error) => self.notify_limits(&format!("Export failed: {error}")),
+        }
+    }
+
+    /// Save toast + clipboard. Clipboard is best-effort but multi-path so it
+    /// actually works on KDE Wayland (GDK alone often silently fails).
+    fn finish_screenshot(&self, path: &std::path::Path, full_window: bool) {
+        let clipped = copy_png_to_clipboard(path);
+        let msg = if clipped {
+            format!("Copied to clipboard · saved {}", path.display())
+        } else {
+            format!("Saved {} · clipboard copy failed", path.display())
+        };
+        let toast = adw::Toast::new(&msg);
+        toast.set_button_label(Some("Open"));
+        let opened = path.to_path_buf();
+        toast.connect_button_clicked(move |_| open_url(&opened.to_string_lossy()));
+        if full_window {
+            self.0.toast.add_toast(toast);
+        } else {
+            self.0.limits_toast.add_toast(toast);
         }
     }
 
@@ -433,9 +537,80 @@ impl AppUi {
         self.export(None);
     }
 
-    fn notify(&self, message: &str) {
+    fn notify_full(&self, message: &str) {
         self.0.toast.add_toast(adw::Toast::new(message));
     }
+
+    fn notify_limits(&self, message: &str) {
+        self.0.limits_toast.add_toast(adw::Toast::new(message));
+    }
+}
+
+/// Pin the compact window to the bottom-right of its current monitor via KWin.
+/// Wayland forbids clients from setting absolute geometry themselves.
+fn place_limits_bottom_right() {
+    let w = config::LIMITS_WIDTH;
+    let h = config::LIMITS_HEIGHT;
+    let margin = config::LIMITS_SCREEN_MARGIN;
+    let script = format!(
+        r#"
+const TARGET_W = {w};
+const TARGET_H = {h};
+const MARGIN = {margin};
+const clients = workspace.windowList();
+for (var i = 0; i < clients.length; i++) {{
+  var c = clients[i];
+  var cls = c.resourceClass ? c.resourceClass.toString().toLowerCase() : "";
+  var name = c.resourceName ? c.resourceName.toString().toLowerCase() : "";
+  var cap = c.caption ? c.caption.toString() : "";
+  if (cls.indexOf("tokenmaxxing") < 0 && name.indexOf("tokenmaxxing") < 0) continue;
+  if (cap.indexOf("dashboard") >= 0) continue;
+  var area = null;
+  try {{ area = workspace.clientArea(KWin.PlacementArea, c); }}
+  catch (e1) {{
+    try {{ area = workspace.clientArea(KWin.WorkArea, c.output, 0); }}
+    catch (e2) {{
+      try {{ area = workspace.clientArea(KWin.MaximizeArea, c.screen, c.desktop); }}
+      catch (e3) {{ continue; }}
+    }}
+  }}
+  var x = Math.round(area.x + area.width - TARGET_W - MARGIN);
+  var y = Math.round(area.y + area.height - TARGET_H - MARGIN);
+  c.frameGeometry = {{ x: x, y: y, width: TARGET_W, height: TARGET_H }};
+}}
+"#
+    );
+    let path = std::env::temp_dir().join("tokenmaxxing-place.js");
+    if std::fs::write(&path, script).is_err() {
+        return;
+    }
+    let path_str = path.to_string_lossy().into_owned();
+    // Fire-and-forget — placement is best-effort on non-KWin desktops.
+    let _ = std::process::Command::new("qdbus6")
+        .args([
+            "org.kde.KWin",
+            "/Scripting",
+            "org.kde.kwin.Scripting.unloadScript",
+            &path_str,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    let _ = std::process::Command::new("qdbus6")
+        .args([
+            "org.kde.KWin",
+            "/Scripting",
+            "org.kde.kwin.Scripting.loadScript",
+            &path_str,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    let _ = std::process::Command::new("qdbus6")
+        .args(["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.start"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 struct ActionBar {
@@ -528,11 +703,11 @@ fn install_draw(canvas: &gtk::DrawingArea, state: &Rc<RenderState>, plan_cell: &
 }
 
 fn loading(cr: &gtk::cairo::Context, w: f64) {
-    cr.set_source_rgb(theme::BG.0, theme::BG.1, theme::BG.2);
+    cr.set_source_rgb(theme::bg().0, theme::bg().1, theme::bg().2);
     cr.paint().ok();
     cr.select_font_face("sans-serif", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
     cr.set_font_size(15.0);
-    cr.set_source_rgb(theme::MUTED.0, theme::MUTED.1, theme::MUTED.2);
+    cr.set_source_rgb(theme::muted().0, theme::muted().1, theme::muted().2);
     let msg = "Reading quotas…";
     let tw = cr.text_extents(msg).map(|e| e.width()).unwrap_or(0.0);
     cr.move_to((w - tw) / 2.0, 80.0);
@@ -546,4 +721,58 @@ fn status_line(dash: &Dashboard) -> String {
 
 fn open_url(url: &str) {
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+/// Put a PNG on the system clipboard. Tries GDK first, then `wl-copy` (Wayland),
+/// then `xclip` (X11). Returns whether at least one path succeeded.
+fn copy_png_to_clipboard(path: &std::path::Path) -> bool {
+    let Ok(data) = std::fs::read(path) else {
+        return false;
+    };
+    let mut ok = false;
+
+    // GDK — ContentProvider with image/png is more reliable than set_texture alone.
+    if let Some(display) = gtk::gdk::Display::default() {
+        let bytes = glib::Bytes::from_owned(data.clone());
+        let provider = gtk::gdk::ContentProvider::for_bytes("image/png", &bytes);
+        if display.clipboard().set_content(Some(&provider)).is_ok() {
+            ok = true;
+        } else if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
+            display.clipboard().set_texture(&texture);
+            ok = true;
+        }
+    }
+
+    // wl-copy — the reliable path on KDE/wlroots Wayland.
+    if pipe_to_cmd(&data, "wl-copy", &["--type", "image/png"]) {
+        ok = true;
+    } else if pipe_to_cmd(&data, "xclip", &["-selection", "clipboard", "-t", "image/png"]) {
+        ok = true;
+    }
+
+    ok
+}
+
+fn pipe_to_cmd(data: &[u8], program: &str, args: &[&str]) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let Ok(mut child) = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        return false;
+    };
+    if stdin.write_all(data).is_err() {
+        let _ = child.kill();
+        return false;
+    }
+    drop(stdin);
+    child.wait().map(|s| s.success()).unwrap_or(false)
 }

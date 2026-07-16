@@ -12,11 +12,12 @@ use crate::theme::{self, Rgb};
 use gtk::cairo::{Context, FontSlant, FontWeight};
 use std::collections::HashSet;
 
-const MARGIN: f64 = 18.0;
-const GAP: f64 = 14.0;
-const PAD: f64 = 16.0;
-const RADIUS: f64 = 16.0;
-const TITLE_H: f64 = 24.0;
+const MARGIN: f64 = 16.0;
+const GAP: f64 = 12.0;
+const PAD: f64 = 14.0;
+const RADIUS: f64 = 14.0;
+const TITLE_H: f64 = 22.0;
+const LIMITS_GAP: f64 = 10.0;
 
 #[derive(Clone, Copy)]
 pub struct Rect {
@@ -43,7 +44,16 @@ struct Card {
 }
 
 enum Panel {
-    Section { title: String, badge: Option<Authority>, source: Option<String> },
+    Section { title: String, badge: Option<Authority>, source: Option<String>, accent: Rgb },
+    /// Compact provider strip used by the limits (small) window.
+    LimitsProvider {
+        name: String,
+        subtitle: String,
+        badge: Authority,
+        gauges: Vec<Gauge>,
+        accent: Rgb,
+        error: Option<String>,
+    },
     Kpi { value: String, label: String, sub: Option<String>, accent: Rgb },
     HeroRing { gauge: Gauge, accent: Rgb, authority: Authority },
     ResetHorizon { title: String, ticks: Vec<ResetTick> },
@@ -114,45 +124,56 @@ pub enum Scope {
 /// next one wouldn't fit, then share the line by their grow weights.
 pub fn plan(dash: &Dashboard, width: f64, scope: Scope) -> Plan {
     let cards = build_cards(dash, scope);
-    let usable = (width - MARGIN * 2.0).max(200.0);
+    let gap = if scope == Scope::Limits { LIMITS_GAP } else { GAP };
+    let margin = if scope == Scope::Limits { 14.0 } else { MARGIN };
+    let usable = (width - margin * 2.0).max(200.0);
     let mut placed = Vec::with_capacity(cards.len());
-    let mut y = MARGIN;
+    let mut y = margin;
     let mut iter = cards.into_iter().peekable();
 
     while let Some(card) = iter.next() {
         if matches!(card.panel, Panel::Section { .. }) {
             let h = card.height;
-            placed.push(Placed { rect: Rect { x: MARGIN, y, w: usable, h }, card });
-            y += h + GAP * 0.6;
+            placed.push(Placed { rect: Rect { x: margin, y, w: usable, h }, card });
+            y += h + gap * 0.55;
+            continue;
+        }
+
+        // Limits cards always stack full-width — never squeeze three providers
+        // onto one row of half-sized rings.
+        if matches!(card.panel, Panel::LimitsProvider { .. }) {
+            let h = card.height;
+            placed.push(Placed { rect: Rect { x: margin, y, w: usable, h }, card });
+            y += h + gap;
             continue;
         }
 
         let mut line = vec![card];
         let mut used = line[0].min_w;
         while let Some(next) = iter.peek() {
-            if matches!(next.panel, Panel::Section { .. }) {
+            if matches!(next.panel, Panel::Section { .. } | Panel::LimitsProvider { .. }) {
                 break;
             }
-            if used + GAP + next.min_w > usable {
+            if used + gap + next.min_w > usable {
                 break;
             }
-            used += GAP + next.min_w;
+            used += gap + next.min_w;
             line.push(iter.next().unwrap());
         }
 
         let total_grow: f64 = line.iter().map(|c| c.grow).sum::<f64>().max(0.001);
-        let avail = usable - GAP * (line.len() as f64 - 1.0);
+        let avail = usable - gap * (line.len() as f64 - 1.0);
         let row_h = line.iter().map(|c| c.height).fold(0.0, f64::max);
-        let mut x = MARGIN;
+        let mut x = margin;
         for card in line {
             let w = avail * card.grow / total_grow;
             placed.push(Placed { rect: Rect { x, y, w, h: row_h }, card });
-            x += w + GAP;
+            x += w + gap;
         }
-        y += row_h + GAP;
+        y += row_h + gap;
     }
 
-    Plan { height: y - GAP + MARGIN, placed }
+    Plan { height: y - gap + margin, placed }
 }
 
 pub fn paint(cr: &Context, plan: &Plan, width: f64, opts: &PaintOpts) {
@@ -181,13 +202,16 @@ pub fn paint(cr: &Context, plan: &Plan, width: f64, opts: &PaintOpts) {
 
 fn paint_card(cr: &Context, r: Rect, card: &Card) {
     match &card.panel {
-        Panel::Section { title, badge, source } => paint_section(cr, r, title, *badge, source.as_deref()),
+        Panel::Section { title, badge, source, accent } => {
+            paint_section(cr, r, title, *badge, source.as_deref(), *accent)
+        }
         panel => {
             rounded(cr, r.x, r.y, r.w, r.h, RADIUS);
-            set(cr, theme::PANEL);
+            set(cr, theme::panel());
             let _ = cr.fill();
+            // Hairline edge — cool border, not a harsh track ring.
             rounded(cr, r.x, r.y, r.w, r.h, RADIUS);
-            set_alpha(cr, theme::TRACK, 0.9);
+            set_alpha(cr, theme::border(), if theme::is_dark() { 0.95 } else { 1.0 });
             cr.set_line_width(1.0);
             let _ = cr.stroke();
             paint_panel(cr, r, panel);
@@ -195,24 +219,24 @@ fn paint_card(cr: &Context, r: Rect, card: &Card) {
     }
 }
 
-fn paint_section(cr: &Context, r: Rect, title: &str, badge: Option<Authority>, source: Option<&str>) {
+fn paint_section(cr: &Context, r: Rect, title: &str, badge: Option<Authority>, source: Option<&str>, accent: Rgb) {
     let cy = r.y + r.h * 0.62;
-    set(cr, theme::CYAN);
+    set(cr, accent);
     cr.set_line_width(3.0);
-    cr.move_to(r.x, r.y + 4.0);
-    cr.line_to(r.x, r.y + r.h - 4.0);
+    cr.move_to(r.x, r.y + 5.0);
+    cr.line_to(r.x, r.y + r.h - 5.0);
     let _ = cr.stroke();
-    font(cr, 17.0, FontWeight::Bold);
-    set(cr, theme::TEXT);
+    font(cr, 15.5, FontWeight::Bold);
+    set(cr, theme::text());
     text_left(cr, title, r.x + 12.0, cy);
     let title_w = cr.text_extents(title).map(|e| e.width()).unwrap_or(0.0);
-    let mut x = r.x + 12.0 + title_w + 12.0;
+    let mut x = r.x + 12.0 + title_w + 10.0;
     if let Some(auth) = badge {
-        x += badge_pill(cr, auth, x, r.y + r.h * 0.28) + 10.0;
+        x += badge_pill(cr, auth, x, r.y + r.h * 0.30) + 8.0;
     }
     if let Some(src) = source {
-        font(cr, 11.5, FontWeight::Normal);
-        set(cr, theme::MUTED);
+        font(cr, 11.0, FontWeight::Normal);
+        set(cr, theme::muted());
         text_left(cr, src, x, cy);
     }
 }
@@ -221,6 +245,9 @@ fn paint_panel(cr: &Context, r: Rect, panel: &Panel) {
     let inner = Rect { x: r.x + PAD, y: r.y + PAD, w: r.w - PAD * 2.0, h: r.h - PAD * 2.0 };
     match panel {
         Panel::Section { .. } => {}
+        Panel::LimitsProvider { name, subtitle, badge, gauges, accent, error } => {
+            paint_limits_provider(cr, r, name, subtitle, *badge, gauges, *accent, error.as_deref())
+        }
         Panel::Kpi { value, label, sub, accent } => paint_kpi(cr, inner, value, label, sub.as_deref(), *accent),
         Panel::HeroRing { gauge, accent, authority } => paint_hero_ring(cr, inner, gauge, *accent, *authority),
         Panel::ResetHorizon { title, ticks } => paint_reset_horizon(cr, inner, title, ticks),
@@ -261,12 +288,12 @@ fn paint_panel(cr: &Context, r: Rect, panel: &Panel) {
 /// inner rect and return the remaining body rect.
 fn title_row(cr: &Context, inner: Rect, title: &str, badge: Option<Authority>, caption: Option<&str>) -> Rect {
     font(cr, 13.0, FontWeight::Bold);
-    set(cr, theme::TEXT);
+    set(cr, theme::text());
     text_left(cr, title, inner.x, inner.y + 12.0);
     let mut right = inner.x + inner.w;
     if let Some(cap) = caption {
         font(cr, 11.0, FontWeight::Normal);
-        set(cr, theme::MUTED);
+        set(cr, theme::muted());
         let w = cr.text_extents(cap).map(|e| e.width()).unwrap_or(0.0);
         text_left(cr, cap, right - w, inner.y + 12.0);
         right -= w + 8.0;
@@ -279,7 +306,7 @@ fn title_row(cr: &Context, inner: Rect, title: &str, badge: Option<Authority>, c
 
 fn paint_kpi(cr: &Context, inner: Rect, value: &str, label: &str, sub: Option<&str>, accent: Rgb) {
     font(cr, 11.0, FontWeight::Bold);
-    set(cr, theme::MUTED);
+    set(cr, theme::muted());
     text_left(cr, &label.to_uppercase(), inner.x, inner.y + 11.0);
     let vsize = (inner.h * 0.44).clamp(20.0, 34.0);
     mono(cr, vsize, FontWeight::Bold);
@@ -287,7 +314,7 @@ fn paint_kpi(cr: &Context, inner: Rect, value: &str, label: &str, sub: Option<&s
     text_left(cr, value, inner.x, inner.y + inner.h * 0.62);
     if let Some(sub) = sub {
         font(cr, 11.0, FontWeight::Normal);
-        set(cr, theme::MUTED);
+        set(cr, theme::muted());
         text_left(cr, sub, inner.x, inner.y + inner.h - 2.0);
     }
 }
@@ -296,7 +323,7 @@ fn paint_kpi(cr: &Context, inner: Rect, value: &str, label: &str, sub: Option<&s
 /// with the model/window, reset ETA, and an ACTIVE flag when the server marks it.
 fn paint_hero_ring(cr: &Context, inner: Rect, gauge: &Gauge, accent: Rgb, authority: Authority) {
     font(cr, 11.0, FontWeight::Bold);
-    set(cr, theme::MUTED);
+    set(cr, theme::muted());
     text_left(cr, "CLOSEST LIMIT", inner.x, inner.y + 11.0);
     badge_pill(cr, authority, inner.x + inner.w - 46.0, inner.y);
 
@@ -312,7 +339,7 @@ fn paint_hero_ring(cr: &Context, inner: Rect, gauge: &Gauge, accent: Rgb, author
     let tx = ring_x + diameter + 18.0;
     let tw = inner.x + inner.w - tx;
     font(cr, 15.0, FontWeight::Bold);
-    set(cr, theme::TEXT);
+    set(cr, theme::text());
     let mut ty = ring_y + diameter * 0.34;
     for line in wrap(cr, &gauge.label, tw, 2) {
         text_left(cr, &line, tx, ty);
@@ -327,12 +354,12 @@ fn paint_hero_ring(cr: &Context, inner: Rect, gauge: &Gauge, accent: Rgb, author
     }
     if gauge.is_active {
         font(cr, 9.5, FontWeight::Bold);
-        let pill = "BINDING CONSTRAINT";
+        let pill = "BINDING";
         let pw = cr.text_extents(pill).map(|e| e.width()).unwrap_or(0.0) + 14.0;
         rounded(cr, tx, ty - 4.0, pw, 17.0, 8.5);
         set(cr, theme::MAGENTA);
         let _ = cr.fill();
-        set(cr, (0.1, 0.02, 0.05));
+        set(cr, theme::on_badge());
         text_left(cr, pill, tx + 7.0, ty + 8.0);
     }
 }
@@ -343,7 +370,7 @@ fn paint_reset_horizon(cr: &Context, inner: Rect, title: &str, ticks: &[ResetTic
     let body = title_row(cr, inner, title, None, Some("next 7 days"));
     let axis_y = body.y + body.h * 0.5;
     let span = 7.0 * 86_400.0;
-    set_alpha(cr, theme::TRACK, 1.0);
+    set_alpha(cr, theme::track(), 1.0);
     cr.set_line_width(2.0);
     cr.move_to(body.x, axis_y);
     cr.line_to(body.x + body.w, axis_y);
@@ -352,12 +379,12 @@ fn paint_reset_horizon(cr: &Context, inner: Rect, title: &str, ticks: &[ResetTic
     font(cr, 9.5, FontWeight::Normal);
     for d in 0..=7 {
         let x = body.x + (d as f64 / 7.0) * body.w;
-        set_alpha(cr, theme::TRACK, 0.6);
+        set_alpha(cr, theme::track(), 0.6);
         cr.set_line_width(1.0);
         cr.move_to(x, axis_y - 4.0);
         cr.line_to(x, axis_y + 4.0);
         let _ = cr.stroke();
-        set(cr, theme::MUTED);
+        set(cr, theme::muted());
         centered(cr, &format!("{d}d"), x, body.y + body.h - 1.0);
     }
     let mut last_x = f64::NEG_INFINITY;
@@ -386,6 +413,89 @@ fn paint_reset_horizon(cr: &Context, inner: Rect, title: &str, ticks: &[ResetTic
     }
 }
 
+/// Compact provider card for the limits window: accent rail, title + badge,
+/// then a tight row of rings. Designed so three providers fit a short window.
+fn paint_limits_provider(
+    cr: &Context,
+    r: Rect,
+    name: &str,
+    subtitle: &str,
+    badge: Authority,
+    gauges: &[Gauge],
+    accent: Rgb,
+    error: Option<&str>,
+) {
+    // Left accent rail — slightly soft so it reads as trim, not a neon bar.
+    rounded(cr, r.x + 1.0, r.y + 10.0, 3.0, r.h - 20.0, 1.5);
+    set_alpha(cr, accent, if theme::is_dark() { 0.92 } else { 0.88 });
+    let _ = cr.fill();
+
+    let x0 = r.x + 16.0;
+    let y0 = r.y + 12.0;
+    let w0 = r.w - 28.0;
+
+    // Header: name · badge · subtitle
+    font(cr, 13.5, FontWeight::Bold);
+    set(cr, theme::text());
+    text_left(cr, name, x0, y0 + 12.0);
+    let name_w = cr.text_extents(name).map(|e| e.width()).unwrap_or(0.0);
+    let mut hx = x0 + name_w + 8.0;
+    hx += badge_pill(cr, badge, hx, y0 + 1.0) + 8.0;
+    if !subtitle.is_empty() {
+        font(cr, 11.0, FontWeight::Normal);
+        set(cr, theme::muted());
+        let max = (r.x + r.w - 14.0 - hx).max(40.0);
+        text_left(cr, &charts_ellipsize(cr, subtitle, max), hx, y0 + 12.0);
+    }
+
+    let body = Rect {
+        x: x0,
+        y: y0 + 22.0,
+        w: w0,
+        h: r.h - 40.0,
+    };
+    if let Some(err) = error {
+        font(cr, 12.0, FontWeight::Normal);
+        set(cr, theme::MAGENTA);
+        for (i, line) in wrap(cr, err, body.w, 3).iter().enumerate() {
+            text_left(cr, line, body.x, body.y + 18.0 + i as f64 * 16.0);
+        }
+        return;
+    }
+    if gauges.is_empty() {
+        empty_note(cr, body, "no windows");
+        return;
+    }
+
+    let n = gauges.len().min(5);
+    let slot = body.w / n as f64;
+    let diameter = (slot * 0.62).min(body.h - 36.0).clamp(44.0, 72.0);
+    let ring_y = body.y + ((body.h - (diameter + 32.0)) / 2.0).max(2.0);
+    for (i, g) in gauges.iter().take(n).enumerate() {
+        let cx = body.x + slot * (i as f64 + 0.5);
+        let color = theme::gauge_color(accent, g.severity());
+        cr.save().ok();
+        cr.translate(cx - diameter / 2.0, ring_y);
+        gauge::draw_ring(cr, diameter as i32, diameter as i32, g.fraction, color, &g.percent_text(), "");
+        cr.restore().ok();
+        if g.is_active {
+            // Small accent dot instead of a noisy ACTIVE pill.
+            set(cr, theme::MAGENTA);
+            cr.new_sub_path();
+            cr.arc(cx + diameter * 0.32, ring_y + 4.0, 3.2, 0.0, std::f64::consts::PI * 2.0);
+            let _ = cr.fill();
+        }
+        font(cr, 10.5, FontWeight::Normal);
+        set(cr, theme::secondary());
+        centered(cr, &charts_ellipsize(cr, &g.label, slot - 8.0), cx, ring_y + diameter + 12.0);
+        if let Some(sub) = ring_subline(g) {
+            font(cr, 9.5, FontWeight::Normal);
+            set(cr, theme::muted());
+            centered(cr, &charts_ellipsize(cr, &sub, slot - 8.0), cx, ring_y + diameter + 25.0);
+        }
+    }
+}
+
 fn paint_rings(cr: &Context, inner: Rect, title: &str, gauges: &[Gauge], accent: Rgb) {
     let body = if title.is_empty() { inner } else { title_row(cr, inner, title, None, None) };
     if gauges.is_empty() {
@@ -394,10 +504,8 @@ fn paint_rings(cr: &Context, inner: Rect, title: &str, gauges: &[Gauge], accent:
     }
     let n = gauges.len().min(5);
     let slot = body.w / n as f64;
-    let diameter = (slot * 0.72).min(body.h - 34.0).max(40.0);
-    // Vertically centre the ring + label + sub block so a tall card has no
-    // lopsided gap at the bottom.
-    let ring_y = body.y + ((body.h - (diameter + 44.0)) / 2.0).max(0.0);
+    let diameter = (slot * 0.68).min(body.h - 36.0).max(44.0);
+    let ring_y = body.y + ((body.h - (diameter + 40.0)) / 2.0).max(0.0);
     for (i, g) in gauges.iter().take(n).enumerate() {
         let cx = body.x + slot * (i as f64 + 0.5);
         let ring_x = cx - diameter / 2.0;
@@ -407,35 +515,31 @@ fn paint_rings(cr: &Context, inner: Rect, title: &str, gauges: &[Gauge], accent:
         gauge::draw_ring(cr, diameter as i32, diameter as i32, g.fraction, color, &g.percent_text(), "");
         cr.restore().ok();
         if g.is_active {
-            font(cr, 8.5, FontWeight::Bold);
-            let pill = "ACTIVE";
-            let pw = cr.text_extents(pill).map(|e| e.width()).unwrap_or(0.0) + 12.0;
-            rounded(cr, cx - pw / 2.0, ring_y - 4.0, pw, 15.0, 7.5);
             set(cr, theme::MAGENTA);
+            cr.new_sub_path();
+            cr.arc(cx + diameter * 0.30, ring_y + 3.0, 3.4, 0.0, std::f64::consts::PI * 2.0);
             let _ = cr.fill();
-            set(cr, (0.1, 0.02, 0.05));
-            centered(cr, pill, cx, ring_y + 7.0);
         }
         font(cr, 11.0, FontWeight::Normal);
-        set(cr, (0.72, 0.77, 0.85));
-        centered(cr, &charts_ellipsize(cr, &g.label, slot - 6.0), cx, ring_y + diameter + 14.0);
+        set(cr, theme::secondary());
+        centered(cr, &charts_ellipsize(cr, &g.label, slot - 6.0), cx, ring_y + diameter + 13.0);
         if let Some(sub) = ring_subline(g) {
             font(cr, 9.5, FontWeight::Normal);
-            set(cr, theme::MUTED);
-            centered(cr, &charts_ellipsize(cr, &sub, slot - 6.0), cx, ring_y + diameter + 28.0);
+            set(cr, theme::muted());
+            centered(cr, &charts_ellipsize(cr, &sub, slot - 6.0), cx, ring_y + diameter + 27.0);
         }
     }
 }
 
 fn paint_callout(cr: &Context, inner: Rect, title: &str, headline: &str, body: &str, accent: Rgb) {
     font(cr, 11.0, FontWeight::Bold);
-    set(cr, theme::MUTED);
+    set(cr, theme::muted());
     text_left(cr, &title.to_uppercase(), inner.x, inner.y + 11.0);
     mono(cr, (inner.h * 0.3).clamp(18.0, 26.0), FontWeight::Bold);
     set(cr, accent);
     text_left(cr, headline, inner.x, inner.y + inner.h * 0.55);
     font(cr, 12.0, FontWeight::Normal);
-    set(cr, (0.72, 0.77, 0.85));
+    set(cr, theme::secondary());
     for (i, line) in wrap(cr, body, inner.w, 2).iter().enumerate() {
         text_left(cr, line, inner.x, inner.y + inner.h * 0.72 + i as f64 * 16.0);
     }
@@ -468,10 +572,10 @@ fn paint_legend(cr: &Context, r: Rect, legend: &[(String, Rgb, String)]) {
         // Value is right-aligned; measure it first so the label never runs into it.
         mono(cr, 11.0, FontWeight::Bold);
         let vw = cr.text_extents(value).map(|e| e.width()).unwrap_or(0.0);
-        set(cr, theme::TEXT);
+        set(cr, theme::text());
         text_left(cr, value, r.x + r.w - vw, y + 4.0);
         font(cr, 11.5, FontWeight::Normal);
-        set(cr, (0.72, 0.77, 0.85));
+        set(cr, theme::secondary());
         let label_max = (r.w - vw - 24.0).max(24.0);
         text_left(cr, &charts_ellipsize(cr, label, label_max), r.x + 15.0, y + 4.0);
     }
@@ -487,10 +591,10 @@ fn paint_stat(cr: &Context, inner: Rect, title: &str, rows: &[(String, String)])
     for (i, (k, v)) in rows.iter().enumerate() {
         let y = body.y + line_h * (i as f64 + 0.5) + 4.0;
         font(cr, 12.0, FontWeight::Normal);
-        set(cr, theme::MUTED);
+        set(cr, theme::muted());
         text_left(cr, k, body.x, y);
         mono(cr, 12.5, FontWeight::Bold);
-        set(cr, theme::TEXT);
+        set(cr, theme::text());
         let vw = cr.text_extents(v).map(|e| e.width()).unwrap_or(0.0);
         text_left(cr, v, body.x + body.w - vw, y);
     }
@@ -498,7 +602,7 @@ fn paint_stat(cr: &Context, inner: Rect, title: &str, rows: &[(String, String)])
 
 fn empty_note(cr: &Context, r: Rect, msg: &str) {
     font(cr, 12.0, FontWeight::Normal);
-    set(cr, theme::MUTED);
+    set(cr, theme::muted());
     centered(cr, msg, r.x + r.w / 2.0, r.y + r.h / 2.0);
 }
 
@@ -507,36 +611,58 @@ fn empty_note(cr: &Context, r: Rect, msg: &str) {
 fn build_cards(dash: &Dashboard, scope: Scope) -> Vec<Card> {
     let mut cards = Vec::new();
     match scope {
-        // The compact glance view: nothing but the quota rings for both providers.
+        // Compact provider strips — dense enough that three fit a short window.
         Scope::Limits => {
-            quota_rings_section(&mut cards, &dash.claude_quota, "Claude — live quota", theme::CYAN);
-            quota_rings_section(&mut cards, &dash.opencode_quota, "opencode — rolling caps", theme::LIME);
+            limits_provider_card(
+                &mut cards,
+                &dash.claude_quota,
+                theme::provider_accent(theme::ProviderAccent::Claude),
+            );
+            limits_provider_card(
+                &mut cards,
+                &dash.grok_quota,
+                theme::provider_accent(theme::ProviderAccent::Grok),
+            );
+            limits_provider_card(
+                &mut cards,
+                &dash.opencode_quota,
+                theme::provider_accent(theme::ProviderAccent::OpenCode),
+            );
         }
         Scope::Full => {
             claude_quota_cards(&mut cards, &dash.claude_quota);
             let roi = plan_monthly_usd(&dash.claude_quota.subtitle);
-            usage_cards(&mut cards, &dash.claude_usage, "Claude usage", true, roi);
+            usage_cards(&mut cards, &dash.claude_usage, "Claude usage", UsageKind::Claude, roi);
+            grok_quota_cards(&mut cards, &dash.grok_quota);
+            usage_cards(&mut cards, &dash.grok_usage, "Grok usage", UsageKind::Grok, None);
             opencode_quota_cards(&mut cards, &dash.opencode_quota);
-            usage_cards(&mut cards, &dash.opencode_usage, "opencode usage", false, None);
+            usage_cards(&mut cards, &dash.opencode_usage, "opencode usage", UsageKind::OpenCode, None);
         }
     }
     cards
 }
 
-/// A provider's quota as a single full-width row of large rings — the entire
-/// content of the compact view.
-fn quota_rings_section(cards: &mut Vec<Card>, snap: &Snapshot, title: &str, accent: Rgb) {
-    cards.push(section(&format!("sec-{}", slug(title)), title, Some(snap.authority), Some(&snap.source)));
-    if let Some(err) = &snap.error {
-        cards.push(callout_card(&format!("{}-err", slug(title)), "Unavailable", "OFFLINE", err, theme::MAGENTA, 3.0, 300.0, 96.0));
-        return;
-    }
+/// One compact card per provider for the limits window.
+fn limits_provider_card(cards: &mut Vec<Card>, snap: &Snapshot, accent: Rgb) {
+    let name = match snap.provider_id.as_str() {
+        "anthropic" => "Claude",
+        "xai" => "Grok",
+        "opencode-go" => "opencode",
+        other => other,
+    };
     cards.push(Card {
-        id: format!("{}-rings", slug(title)),
+        id: format!("limits-{}", snap.provider_id),
         grow: 1.0,
         min_w: 100_000.0,
-        height: 184.0,
-        panel: Panel::Rings { title: String::new(), gauges: snap.gauges.clone(), accent },
+        height: 138.0,
+        panel: Panel::LimitsProvider {
+            name: name.into(),
+            subtitle: snap.subtitle.clone(),
+            badge: snap.authority,
+            gauges: snap.gauges.clone(),
+            accent,
+            error: snap.error.clone(),
+        },
     });
 }
 
@@ -584,23 +710,28 @@ fn reset_ticks(snap: &Snapshot, accent: Rgb) -> Vec<ResetTick> {
     ticks
 }
 
-fn section(id: &str, title: &str, badge: Option<Authority>, source: Option<&str>) -> Card {
+fn section_accent(id: &str, title: &str, badge: Option<Authority>, source: Option<&str>, accent: Rgb) -> Card {
     Card {
         id: id.into(),
         grow: 1.0,
         min_w: 100_000.0,
-        height: 34.0,
-        panel: Panel::Section { title: title.into(), badge, source: source.map(str::to_string) },
+        height: 30.0,
+        panel: Panel::Section {
+            title: title.into(),
+            badge,
+            source: source.map(str::to_string),
+            accent,
+        },
     }
 }
 
 fn claude_quota_cards(cards: &mut Vec<Card>, snap: &Snapshot) {
-    cards.push(section("sec-claude-quota", "Claude — live quota", Some(snap.authority), Some(&snap.source)));
+    let accent = theme::provider_accent(theme::ProviderAccent::Claude);
+    cards.push(section_accent("sec-claude-quota", "Claude — live quota", Some(snap.authority), Some(&snap.source), accent));
     if let Some(err) = &snap.error {
         cards.push(callout_card("claude-quota-err", "Claude quota unavailable", "OFFLINE", err, theme::MAGENTA, 3.0, 340.0, 96.0));
         return;
     }
-    let accent = theme::CYAN;
     if let Some(binding) = snap.binding_gauge() {
         cards.push(Card {
             id: "claude-binding".into(),
@@ -637,8 +768,56 @@ fn claude_quota_cards(cards: &mut Vec<Card>, snap: &Snapshot) {
     }
 }
 
+fn grok_quota_cards(cards: &mut Vec<Card>, snap: &Snapshot) {
+    let accent = theme::provider_accent(theme::ProviderAccent::Grok);
+    cards.push(section_accent("sec-grok-quota", "Grok — live credits", Some(snap.authority), Some(&snap.source), accent));
+    if let Some(err) = &snap.error {
+        cards.push(callout_card("grok-quota-err", "Grok quota unavailable", "OFFLINE", err, theme::MAGENTA, 3.0, 340.0, 96.0));
+        return;
+    }
+    if let Some(binding) = snap.binding_gauge() {
+        cards.push(Card {
+            id: "grok-binding".into(),
+            grow: 1.5,
+            min_w: 320.0,
+            height: 150.0,
+            panel: Panel::HeroRing { gauge: binding.clone(), accent, authority: snap.authority },
+        });
+    }
+    cards.push(Card {
+        id: "grok-rings".into(),
+        grow: 2.4,
+        min_w: 400.0,
+        height: 150.0,
+        panel: Panel::Rings { title: "Credit windows".into(), gauges: snap.gauges.clone(), accent },
+    });
+    if let Some(spend) = &snap.spend {
+        let value = spend
+            .balance
+            .map(format::usd_cents)
+            .unwrap_or_else(|| "—".into());
+        let sub = if spend.enabled {
+            "prepaid remaining".to_string()
+        } else {
+            "no prepaid balance".to_string()
+        };
+        cards.push(kpi_card("grok-prepaid", &value, "Prepaid balance", Some(&sub), theme::TEAL, 0.9, 150.0, 150.0));
+    }
+    let ticks = reset_ticks(snap, accent);
+    if !ticks.is_empty() {
+        cards.push(Card {
+            id: "grok-reset-horizon".into(),
+            grow: 3.0,
+            min_w: 360.0,
+            height: 108.0,
+            panel: Panel::ResetHorizon { title: "Reset horizon — next unlocks".into(), ticks },
+        });
+    }
+}
+
 fn opencode_quota_cards(cards: &mut Vec<Card>, snap: &Snapshot) {
-    cards.push(section("sec-oc-quota", "opencode — rolling caps", Some(snap.authority), Some(&snap.source)));
+    let accent = theme::provider_accent(theme::ProviderAccent::OpenCode);
+    cards.push(section_accent("sec-oc-quota", "opencode — rolling caps", Some(snap.authority), Some(&snap.source), accent));
     if let Some(err) = &snap.error {
         cards.push(callout_card("oc-quota-err", "opencode caps unavailable", "OFFLINE", err, theme::MAGENTA, 3.0, 340.0, 96.0));
         return;
@@ -648,7 +827,7 @@ fn opencode_quota_cards(cards: &mut Vec<Card>, snap: &Snapshot) {
         grow: 3.0,
         min_w: 380.0,
         height: 150.0,
-        panel: Panel::Rings { title: "Estimated spend vs Go caps".into(), gauges: snap.gauges.clone(), accent: theme::LIME },
+        panel: Panel::Rings { title: "Estimated spend vs Go caps".into(), gauges: snap.gauges.clone(), accent },
     });
     if let Some(note) = &snap.note {
         cards.push(Card {
@@ -661,15 +840,48 @@ fn opencode_quota_cards(cards: &mut Vec<Card>, snap: &Snapshot) {
     }
 }
 
-fn usage_cards(cards: &mut Vec<Card>, usage: &Usage, section_title: &str, is_claude: bool, roi_base: Option<f64>) {
+#[derive(Clone, Copy)]
+enum UsageKind {
+    Claude,
+    Grok,
+    OpenCode,
+}
+
+impl UsageKind {
+    fn accent(self) -> Rgb {
+        match self {
+            UsageKind::Claude => theme::provider_accent(theme::ProviderAccent::Claude),
+            UsageKind::Grok => theme::provider_accent(theme::ProviderAccent::Grok),
+            UsageKind::OpenCode => theme::provider_accent(theme::ProviderAccent::OpenCode),
+        }
+    }
+
+    fn is_claude(self) -> bool {
+        matches!(self, UsageKind::Claude)
+    }
+
+    fn activity_only(self) -> bool {
+        matches!(self, UsageKind::Grok)
+    }
+}
+
+fn usage_cards(cards: &mut Vec<Card>, usage: &Usage, section_title: &str, kind: UsageKind, roi_base: Option<f64>) {
     let source = usage.source.clone();
-    cards.push(section(&format!("sec-{}", slug(section_title)), section_title, Some(usage.authority), Some(&source)));
+    cards.push(section_accent(
+        &format!("sec-{}", slug(section_title)),
+        section_title,
+        Some(usage.authority),
+        Some(&source),
+        kind.accent(),
+    ));
     if usage.is_empty() {
         let msg = usage.error.clone().unwrap_or_else(|| "no local usage yet".into());
-        cards.push(callout_card(&format!("{}-empty", slug(section_title)), "No usage history", "", &msg, theme::MUTED, 3.0, 340.0, 90.0));
+        cards.push(callout_card(&format!("{}-empty", slug(section_title)), "No usage history", "", &msg, theme::muted(), 3.0, 340.0, 90.0));
         return;
     }
-    let accent = if is_claude { theme::CYAN } else { theme::LIME };
+    let accent = kind.accent();
+    let is_claude = kind.is_claude();
+    let activity_only = kind.activity_only();
     let p = slug(section_title);
     let t = &usage.totals;
 
@@ -689,53 +901,89 @@ fn usage_cards(cards: &mut Vec<Card>, usage: &Usage, section_title: &str, is_cla
         });
     }
 
-    // KPI strip — skip the 30-day tile for Claude, whose value-returned hero already leads with it.
-    if roi_base.is_none() {
-        cards.push(kpi_card(&format!("{p}-kpi-30d"), &format::usd(usage.windows.thirty.cost), "Spend 30d", Some(&format!("{} today", format::usd(usage.windows.today.cost))), accent, 1.0, 150.0, 92.0));
-    }
-    cards.push(kpi_card(&format!("{p}-kpi-alltime"), &format::usd(t.cost_usd), if is_claude { "Value all-time" } else { "Spend all-time" }, Some(&format!("over {} days", t.active_days)), theme::LIME, 1.0, 150.0, 92.0));
-    cards.push(kpi_card(&format!("{p}-kpi-tokens"), &format::count(t.total_tokens()), "Tokens all-time", Some(&format!("{} msgs", format::count(t.messages))), theme::VIOLET, 1.0, 150.0, 92.0));
-    cards.push(kpi_card(&format!("{p}-kpi-sessions"), &t.sessions.to_string(), "Sessions", Some(&format!("{} active days", t.active_days)), theme::TEAL, 1.0, 130.0, 92.0));
-    cards.push(kpi_card(&format!("{p}-kpi-cache"), &format::percent(usage.cache_hit_rate()), "Cache hit rate", Some(&format!("{} cached", format::count(t.cache_read))), theme::AZURE, 1.0, 130.0, 92.0));
-    if is_claude {
-        cards.push(kpi_card(&format!("{p}-kpi-tools"), &format::count(t.web_search + t.web_fetch), "Web tool calls", Some(&format!("{} search · {} fetch", t.web_search, t.web_fetch)), theme::ORANGE, 1.0, 130.0, 92.0));
+    if activity_only {
+        cards.push(kpi_card(&format!("{p}-kpi-30d"), &format::count(usage.windows.thirty.messages), "Turns 30d", Some(&format!("{} today", format::count(usage.windows.today.messages))), accent, 1.0, 150.0, 92.0));
+        cards.push(kpi_card(&format!("{p}-kpi-alltime"), &format::count(t.messages), "Turns all-time", Some(&format!("over {} days", t.active_days)), theme::LIME, 1.0, 150.0, 92.0));
+        cards.push(kpi_card(&format!("{p}-kpi-sessions"), &t.sessions.to_string(), "Sessions", Some(&format!("{} active days", t.active_days)), theme::TEAL, 1.0, 130.0, 92.0));
+        cards.push(kpi_card(&format!("{p}-kpi-models"), &usage.by_model.len().to_string(), "Models used", Some(usage.by_model.first().map(|s| s.label.as_str()).unwrap_or("—")), theme::AZURE, 1.0, 130.0, 92.0));
     } else {
-        cards.push(kpi_card(&format!("{p}-kpi-reason"), &format::count(usage.tokens.reasoning), "Reasoning tokens", Some("across providers"), theme::ORANGE, 1.0, 130.0, 92.0));
+        // KPI strip — skip the 30-day tile for Claude, whose value-returned hero already leads with it.
+        if roi_base.is_none() {
+            cards.push(kpi_card(&format!("{p}-kpi-30d"), &format::usd(usage.windows.thirty.cost), "Spend 30d", Some(&format!("{} today", format::usd(usage.windows.today.cost))), accent, 1.0, 150.0, 92.0));
+        }
+        cards.push(kpi_card(&format!("{p}-kpi-alltime"), &format::usd(t.cost_usd), if is_claude { "Value all-time" } else { "Spend all-time" }, Some(&format!("over {} days", t.active_days)), theme::LIME, 1.0, 150.0, 92.0));
+        cards.push(kpi_card(&format!("{p}-kpi-tokens"), &format::count(t.total_tokens()), "Tokens all-time", Some(&format!("{} msgs", format::count(t.messages))), theme::VIOLET, 1.0, 150.0, 92.0));
+        cards.push(kpi_card(&format!("{p}-kpi-sessions"), &t.sessions.to_string(), "Sessions", Some(&format!("{} active days", t.active_days)), theme::TEAL, 1.0, 130.0, 92.0));
+        cards.push(kpi_card(&format!("{p}-kpi-cache"), &format::percent(usage.cache_hit_rate()), "Cache hit rate", Some(&format!("{} cached", format::count(t.cache_read))), theme::AZURE, 1.0, 130.0, 92.0));
+        if is_claude {
+            cards.push(kpi_card(&format!("{p}-kpi-tools"), &format::count(t.web_search + t.web_fetch), "Web tool calls", Some(&format!("{} search · {} fetch", t.web_search, t.web_fetch)), theme::ORANGE, 1.0, 130.0, 92.0));
+        } else {
+            cards.push(kpi_card(&format!("{p}-kpi-reason"), &format::count(usage.tokens.reasoning), "Reasoning tokens", Some("across providers"), theme::ORANGE, 1.0, 130.0, 92.0));
+        }
     }
 
-    // burn-rate projection callout
-    let avg = usage.avg_daily_cost();
-    let proj = avg * 30.0;
-    cards.push(Card {
-        id: format!("{p}-burn"),
-        grow: 1.2,
-        min_w: 240.0,
-        height: 132.0,
-        panel: Panel::Callout {
-            title: if is_claude { "Burn rate — value/day".into() } else { "Burn rate — spend/day".into() },
-            headline: format::usd(avg),
-            body: format!("≈ {}/mo at this pace · today {}", format::usd(proj), format::usd(usage.windows.today.cost)),
-            accent,
-        },
-    });
+    if activity_only {
+        let avg = if t.active_days == 0 { 0.0 } else { t.messages as f64 / t.active_days as f64 };
+        cards.push(Card {
+            id: format!("{p}-burn"),
+            grow: 1.2,
+            min_w: 240.0,
+            height: 132.0,
+            panel: Panel::Callout {
+                title: "Activity — turns/day".into(),
+                headline: format!("{avg:.1}"),
+                body: format!("≈ {:.0}/mo at this pace · today {}", avg * 30.0, format::count(usage.windows.today.messages)),
+                accent,
+            },
+        });
+        let msg_series: Vec<f64> = tail(&usage.daily, 45).iter().map(|d| d.messages as f64).collect();
+        cards.push(Card {
+            id: format!("{p}-daily-msgs"),
+            grow: 2.0,
+            min_w: 320.0,
+            height: 132.0,
+            panel: Panel::Area {
+                title: "Daily turns (45d)".into(),
+                series: msg_series,
+                accent,
+                caption: format!("peak {}", format::count(usage.daily.iter().map(|d| d.messages).max().unwrap_or(0))),
+            },
+        });
+    } else {
+        // burn-rate projection callout
+        let avg = usage.avg_daily_cost();
+        let proj = avg * 30.0;
+        cards.push(Card {
+            id: format!("{p}-burn"),
+            grow: 1.2,
+            min_w: 240.0,
+            height: 132.0,
+            panel: Panel::Callout {
+                title: if is_claude { "Burn rate — value/day".into() } else { "Burn rate — spend/day".into() },
+                headline: format::usd(avg),
+                body: format!("≈ {}/mo at this pace · today {}", format::usd(proj), format::usd(usage.windows.today.cost)),
+                accent,
+            },
+        });
 
-    // daily area charts
-    let cost_series: Vec<f64> = tail(&usage.daily, 45).iter().map(|d| d.cost).collect();
-    cards.push(Card {
-        id: format!("{p}-daily-cost"),
-        grow: 2.0,
-        min_w: 320.0,
-        height: 132.0,
-        panel: Panel::Area { title: if is_claude { "Daily value (45d)".into() } else { "Daily spend (45d)".into() }, series: cost_series, accent, caption: format!("peak {}", format::usd(usage.daily.iter().map(|d| d.cost).fold(0.0, f64::max))) },
-    });
-    let token_series: Vec<f64> = tail(&usage.daily, 45).iter().map(|d| d.tokens as f64).collect();
-    cards.push(Card {
-        id: format!("{p}-daily-tokens"),
-        grow: 2.0,
-        min_w: 300.0,
-        height: 132.0,
-        panel: Panel::Area { title: "Daily tokens (45d)".into(), series: token_series, accent: theme::VIOLET, caption: format!("peak {}", format::count(usage.daily.iter().map(|d| d.tokens).max().unwrap_or(0))) },
-    });
+        // daily area charts
+        let cost_series: Vec<f64> = tail(&usage.daily, 45).iter().map(|d| d.cost).collect();
+        cards.push(Card {
+            id: format!("{p}-daily-cost"),
+            grow: 2.0,
+            min_w: 320.0,
+            height: 132.0,
+            panel: Panel::Area { title: if is_claude { "Daily value (45d)".into() } else { "Daily spend (45d)".into() }, series: cost_series, accent, caption: format!("peak {}", format::usd(usage.daily.iter().map(|d| d.cost).fold(0.0, f64::max))) },
+        });
+        let token_series: Vec<f64> = tail(&usage.daily, 45).iter().map(|d| d.tokens as f64).collect();
+        cards.push(Card {
+            id: format!("{p}-daily-tokens"),
+            grow: 2.0,
+            min_w: 300.0,
+            height: 132.0,
+            panel: Panel::Area { title: "Daily tokens (45d)".into(), series: token_series, accent: theme::VIOLET, caption: format!("peak {}", format::count(usage.daily.iter().map(|d| d.tokens).max().unwrap_or(0))) },
+        });
+    }
 
     // breakdowns
     cards.push(bars_card(&format!("{p}-by-model"), "By model", &usage.by_model));
@@ -747,8 +995,9 @@ fn usage_cards(cards: &mut Vec<Card>, usage: &Usage, section_title: &str, is_cla
         cards.push(bars_card(&format!("{p}-by-project"), "By project", &usage.by_project));
     }
 
-    // token composition
-    cards.push(composition_card(&format!("{p}-tokens"), usage));
+    if !activity_only {
+        cards.push(composition_card(&format!("{p}-tokens"), usage));
+    }
 
     // heatmap
     cards.push(Card {
@@ -769,13 +1018,20 @@ fn usage_cards(cards: &mut Vec<Card>, usage: &Usage, section_title: &str, is_cla
     let mut rows = vec![
         ("First activity".into(), usage.totals.first_day.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "—".into())),
         ("Latest activity".into(), usage.totals.last_day.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "—".into())),
-        ("Input tokens".into(), format::count(usage.tokens.input)),
-        ("Output tokens".into(), format::count(usage.tokens.output)),
-        ("Cache write".into(), format::count(usage.tokens.cache_write)),
-        ("Cache read".into(), format::count(usage.tokens.cache_read)),
     ];
-    if usage.tokens.reasoning > 0 {
-        rows.push(("Reasoning".into(), format::count(usage.tokens.reasoning)));
+    if activity_only {
+        rows.push(("Turns".into(), format::count(t.messages)));
+        rows.push(("Sessions".into(), t.sessions.to_string()));
+        rows.push(("Projects".into(), usage.by_project.len().to_string()));
+        rows.push(("Models".into(), usage.by_model.len().to_string()));
+    } else {
+        rows.push(("Input tokens".into(), format::count(usage.tokens.input)));
+        rows.push(("Output tokens".into(), format::count(usage.tokens.output)));
+        rows.push(("Cache write".into(), format::count(usage.tokens.cache_write)));
+        rows.push(("Cache read".into(), format::count(usage.tokens.cache_read)));
+        if usage.tokens.reasoning > 0 {
+            rows.push(("Reasoning".into(), format::count(usage.tokens.reasoning)));
+        }
     }
     cards.push(Card {
         id: format!("{p}-detail"),
@@ -798,17 +1054,31 @@ fn callout_card(id: &str, title: &str, headline: &str, body: &str, accent: Rgb, 
 /// has, priced or free) so lengths are comparable; the caption shows dollars
 /// where the row is priced, otherwise the token count.
 fn bars_card(id: &str, title: &str, segments: &[Segment]) -> Card {
+    // Prefer tokens when present; fall back to message counts for activity-only
+    // providers (Grok sessions don't store per-turn token usage on disk).
+    let by_tokens = segments.iter().any(|s| s.tokens > 0);
     let mut ordered: Vec<&Segment> = segments.iter().collect();
-    ordered.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+    if by_tokens {
+        ordered.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+    } else {
+        ordered.sort_by(|a, b| b.messages.cmp(&a.messages));
+    }
     let rows: Vec<BarRow> = ordered
         .iter()
         .take(6)
         .enumerate()
-        .map(|(i, s)| BarRow {
-            label: s.label.clone(),
-            value: s.tokens as f64,
-            caption: if s.cost > 0.0 { format::usd(s.cost) } else { format::count(s.tokens) },
-            color: theme::series_color(i),
+        .map(|(i, s)| {
+            let value = if by_tokens { s.tokens } else { s.messages };
+            BarRow {
+                label: s.label.clone(),
+                value: value as f64,
+                caption: if s.cost > 0.0 {
+                    format::usd(s.cost)
+                } else {
+                    format::count(value)
+                },
+                color: theme::series_color(i),
+            }
         })
         .collect();
     Card { id: id.into(), grow: 1.6, min_w: 250.0, height: 176.0, panel: Panel::Bars { title: title.into(), rows, caption: format!("top {}", segments.len().min(6)) } }
@@ -869,6 +1139,62 @@ fn composition_card(id: &str, usage: &Usage) -> Card {
 
 // ---- headless / share export ----------------------------------------------
 
+/// WYSIWYG capture of what the live canvas paints — same plan width and UI
+/// scale as the window, plus a very subtle credit line. `pixel_scale`
+/// multiplies the on-screen size (2.0 ≈ retina of the real window).
+pub fn export_live_view(
+    dash: &Dashboard,
+    plan_width: f64,
+    ui_scale: f64,
+    scope: Scope,
+    path: &std::path::Path,
+    pixel_scale: f64,
+) -> Result<(), String> {
+    use gtk::cairo::{Format, ImageSurface};
+
+    let plan = plan(dash, plan_width, scope);
+    let credit_h = 22.0;
+    let total_h = plan.height + credit_h;
+    let out_scale = (ui_scale * pixel_scale).max(1.0);
+    let width_px = (plan_width * out_scale).ceil() as i32;
+    let height_px = (total_h * out_scale).ceil() as i32;
+    let surface = ImageSurface::create(Format::ARgb32, width_px.max(1), height_px.max(1))
+        .map_err(|e| e.to_string())?;
+    {
+        let cr = Context::new(&surface).map_err(|e| e.to_string())?;
+        cr.scale(out_scale, out_scale);
+        let empty = HashSet::new();
+        let opts = PaintOpts {
+            selecting: false,
+            selected: &empty,
+        };
+        paint(&cr, &plan, plan_width, &opts);
+        paint_credit_line(&cr, plan_width, plan.height, credit_h);
+    }
+    let mut file = std::fs::File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
+    surface.write_to_png(&mut file).map_err(|e| format!("write png: {e}"))
+}
+
+/// Tiny footer used only on screenshots — easy to miss, but identifiable.
+fn paint_credit_line(cr: &Context, width: f64, y0: f64, height: f64) {
+    set(cr, theme::bg());
+    cr.rectangle(0.0, y0, width, height);
+    let _ = cr.fill();
+
+    let label = concat!(
+        "tokenmaxxing ",
+        env!("CARGO_PKG_VERSION"),
+        "  ·  github.com/guitaripod/tokenmaxxing"
+    );
+    mono(cr, 9.5, FontWeight::Normal);
+    // Very quiet — just enough to read if you look for it.
+    set_alpha(cr, theme::muted(), if theme::is_dark() { 0.55 } else { 0.50 });
+    let tw = cr.text_extents(label).map(|e| e.width()).unwrap_or(0.0);
+    let x = ((width - tw) / 2.0).max(8.0);
+    let y = y0 + height * 0.68;
+    text_left(cr, label, x, y);
+}
+
 /// Render the dashboard (or a selected subset of panels) to a standalone PNG
 /// with brand header and footer, at `scale`× for crisp output.
 pub fn export(dash: &Dashboard, width: f64, scale: f64, selected: Option<&HashSet<String>>, scope: Scope, path: &std::path::Path) -> Result<(), String> {
@@ -886,10 +1212,11 @@ pub fn export(dash: &Dashboard, width: f64, scale: f64, selected: Option<&HashSe
     // Drop section headers that have no visible panel under them.
     let items = prune_empty_sections(items);
 
-    let header_h = 92.0;
-    let footer_h = 52.0;
+    let compact = scope == Scope::Limits;
+    let header_h = if compact { 58.0 } else { 88.0 };
+    let footer_h = if compact { 34.0 } else { 48.0 };
     // Re-flow the kept cards top-to-bottom to remove the gaps left by filtered panels.
-    let (reflowed, body_h) = reflow(&items, width);
+    let (reflowed, body_h) = reflow(&items, width, compact);
     let total_h = header_h + body_h + footer_h;
 
     let surface = ImageSurface::create(Format::ARgb32, (width * scale) as i32, (total_h * scale) as i32)
@@ -898,14 +1225,14 @@ pub fn export(dash: &Dashboard, width: f64, scale: f64, selected: Option<&HashSe
         let cr = Context::new(&surface).map_err(|e| e.to_string())?;
         cr.scale(scale, scale);
         background(&cr, width, total_h);
-        paint_export_header(&cr, width, header_h, dash);
+        paint_export_header(&cr, width, header_h, dash, compact);
         cr.save().ok();
         cr.translate(0.0, header_h);
         for (rect, idx) in &reflowed {
             paint_card(&cr, *rect, &items[*idx].card);
         }
         cr.restore().ok();
-        paint_export_footer(&cr, width, total_h, footer_h);
+        paint_export_footer(&cr, width, total_h, footer_h, compact);
     }
     let mut file = std::fs::File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
     surface.write_to_png(&mut file).map_err(|e| format!("write png: {e}"))
@@ -931,107 +1258,128 @@ fn prune_empty_sections(items: Vec<&Placed>) -> Vec<&Placed> {
 
 /// Repack the kept cards into a fresh top-to-bottom layout at `width`, so an
 /// exported subset has no holes. Returns `(rect, index-into-items)` pairs.
-fn reflow(items: &[&Placed], width: f64) -> (Vec<(Rect, usize)>, f64) {
-    let usable = (width - MARGIN * 2.0).max(200.0);
+fn reflow(items: &[&Placed], width: f64, compact: bool) -> (Vec<(Rect, usize)>, f64) {
+    let gap = if compact { LIMITS_GAP } else { GAP };
+    let margin = if compact { 14.0 } else { MARGIN };
+    let usable = (width - margin * 2.0).max(200.0);
     let mut out: Vec<(Rect, usize)> = Vec::with_capacity(items.len());
-    let mut y = MARGIN;
+    let mut y = margin;
     let mut idx = 0;
     while idx < items.len() {
         let card = &items[idx].card;
-        if matches!(card.panel, Panel::Section { .. }) {
-            out.push((Rect { x: MARGIN, y, w: usable, h: card.height }, idx));
-            y += card.height + GAP * 0.6;
+        if matches!(card.panel, Panel::Section { .. } | Panel::LimitsProvider { .. }) {
+            out.push((Rect { x: margin, y, w: usable, h: card.height }, idx));
+            y += card.height
+                + if matches!(card.panel, Panel::Section { .. }) {
+                    gap * 0.55
+                } else {
+                    gap
+                };
             idx += 1;
             continue;
         }
         let mut line = vec![idx];
         let mut used = card.min_w;
         idx += 1;
-        while idx < items.len() && !matches!(items[idx].card.panel, Panel::Section { .. }) {
+        while idx < items.len()
+            && !matches!(
+                items[idx].card.panel,
+                Panel::Section { .. } | Panel::LimitsProvider { .. }
+            )
+        {
             let next = &items[idx].card;
-            if used + GAP + next.min_w > usable {
+            if used + gap + next.min_w > usable {
                 break;
             }
-            used += GAP + next.min_w;
+            used += gap + next.min_w;
             line.push(idx);
             idx += 1;
         }
         let total_grow: f64 = line.iter().map(|j| items[*j].card.grow).sum::<f64>().max(0.001);
-        let avail = usable - GAP * (line.len() as f64 - 1.0);
+        let avail = usable - gap * (line.len() as f64 - 1.0);
         let row_h = line.iter().map(|j| items[*j].card.height).fold(0.0, f64::max);
-        let mut x = MARGIN;
+        let mut x = margin;
         for j in line {
             let w = avail * items[j].card.grow / total_grow;
             out.push((Rect { x, y, w, h: row_h }, j));
-            x += w + GAP;
+            x += w + gap;
         }
-        y += row_h + GAP;
+        y += row_h + gap;
     }
-    (out, y - GAP + MARGIN)
+    (out, y - gap + margin)
 }
 
-fn paint_export_header(cr: &Context, width: f64, h: f64, dash: &Dashboard) {
+fn paint_export_header(cr: &Context, width: f64, h: f64, dash: &Dashboard, compact: bool) {
+    let logo = if compact { h * 0.48 } else { h * 0.52 };
     cr.save().ok();
-    cr.translate(MARGIN, h * 0.22);
-    gauge::draw_logo(cr, h * 0.56);
+    cr.translate(MARGIN, (h - logo) * 0.45);
+    gauge::draw_logo(cr, logo);
     cr.restore().ok();
-    let x = MARGIN + h * 0.56 + 16.0;
-    mono(cr, 30.0, FontWeight::Bold);
+    let x = MARGIN + logo + 12.0;
+    mono(cr, if compact { 20.0 } else { 28.0 }, FontWeight::Bold);
     set(cr, theme::CYAN);
-    text_left(cr, "tokenmaxxing", x, h * 0.5);
-    font(cr, 13.0, FontWeight::Normal);
-    set(cr, theme::MUTED);
-    text_left(cr, "LLM usage dashboard", x, h * 0.72);
+    text_left(cr, "tokenmaxxing", x, h * 0.48);
+    if !compact {
+        font(cr, 12.5, FontWeight::Normal);
+        set(cr, theme::muted());
+        text_left(cr, "LLM usage dashboard", x, h * 0.72);
+    }
     let stamp = dash.generated_at.format("%Y-%m-%d  %H:%M").to_string();
-    font(cr, 13.0, FontWeight::Normal);
-    set(cr, theme::MUTED);
+    font(cr, if compact { 11.0 } else { 12.5 }, FontWeight::Normal);
+    set(cr, theme::muted());
     let sw = cr.text_extents(&stamp).map(|e| e.width()).unwrap_or(0.0);
-    text_left(cr, &stamp, width - MARGIN - sw, h * 0.5);
-    set_alpha(cr, theme::TRACK, 1.0);
-    cr.set_line_width(1.5);
-    cr.move_to(MARGIN, h - 8.0);
-    cr.line_to(width - MARGIN, h - 8.0);
+    text_left(cr, &stamp, width - MARGIN - sw, h * 0.52);
+    set_alpha(cr, theme::track(), 1.0);
+    cr.set_line_width(1.0);
+    cr.move_to(MARGIN, h - 4.0);
+    cr.line_to(width - MARGIN, h - 4.0);
     let _ = cr.stroke();
 }
 
-fn paint_export_footer(cr: &Context, width: f64, total_h: f64, footer_h: f64) {
-    let y = total_h - footer_h * 0.4;
-    set_alpha(cr, theme::TRACK, 1.0);
-    cr.set_line_width(1.5);
-    cr.move_to(MARGIN, y - 18.0);
-    cr.line_to(width - MARGIN, y - 18.0);
+fn paint_export_footer(cr: &Context, width: f64, total_h: f64, footer_h: f64, compact: bool) {
+    let y = total_h - footer_h * 0.35;
+    set_alpha(cr, theme::track(), 1.0);
+    cr.set_line_width(1.0);
+    cr.move_to(MARGIN, y - (if compact { 12.0 } else { 16.0 }));
+    cr.line_to(width - MARGIN, y - (if compact { 12.0 } else { 16.0 }));
     let _ = cr.stroke();
-    mono(cr, 12.0, FontWeight::Normal);
-    set(cr, theme::MUTED);
-    text_left(cr, "github.com/guitaripod/tokenmaxxing", MARGIN, y);
-    let v = concat!("tokenmaxxing ", env!("CARGO_PKG_VERSION"), " · $ figures are API-equivalent estimates");
-    let vw = cr.text_extents(v).map(|e| e.width()).unwrap_or(0.0);
-    text_left(cr, v, width - MARGIN - vw, y);
+    mono(cr, if compact { 10.5 } else { 11.5 }, FontWeight::Normal);
+    set(cr, theme::muted());
+    if compact {
+        text_left(cr, "tokenmaxxing · current limits", MARGIN, y);
+    } else {
+        text_left(cr, "github.com/guitaripod/tokenmaxxing", MARGIN, y);
+        let v = concat!(
+            "tokenmaxxing ",
+            env!("CARGO_PKG_VERSION"),
+            " · $ figures are API-equivalent estimates"
+        );
+        let vw = cr.text_extents(v).map(|e| e.width()).unwrap_or(0.0);
+        text_left(cr, v, width - MARGIN - vw, y);
+    }
 }
 
 // ---- shared drawing helpers ------------------------------------------------
 
 fn background(cr: &Context, w: f64, h: f64) {
-    set(cr, theme::BG);
+    set(cr, theme::bg());
     cr.rectangle(0.0, 0.0, w, h);
     let _ = cr.fill();
 }
 
 fn badge_pill(cr: &Context, auth: Authority, x: f64, y: f64) -> f64 {
-    let (bg, fg) = match auth {
-        Authority::Live => (theme::CYAN, (0.016, 0.133, 0.165)),
-        Authority::Estimated => (theme::LIME, (0.102, 0.149, 0.0)),
-        Authority::Unavailable => (theme::MAGENTA, (0.165, 0.027, 0.078)),
-    };
+    let fill = theme::badge_fill(auth);
+    let ink = theme::badge_ink(auth);
     let label = auth.badge();
-    font(cr, 10.0, FontWeight::Bold);
+    font(cr, 9.0, FontWeight::Bold);
     let tw = cr.text_extents(label).map(|e| e.width()).unwrap_or(0.0);
-    let pw = tw + 16.0;
-    rounded(cr, x, y, pw, 16.0, 8.0);
-    set(cr, bg);
+    let pw = tw + 12.0;
+    let ph = 15.0;
+    rounded(cr, x, y, pw, ph, ph / 2.0);
+    set(cr, fill);
     let _ = cr.fill();
-    set(cr, fg);
-    text_left(cr, label, x + 8.0, y + 11.5);
+    set(cr, ink);
+    text_left(cr, label, x + 6.0, y + 10.5);
     pw
 }
 
@@ -1123,12 +1471,21 @@ fn set_alpha(cr: &Context, c: Rgb, a: f64) {
 
 /// Default export location: `$XDG_PICTURES_DIR` (or ~/Pictures), timestamped.
 pub fn default_output() -> std::path::PathBuf {
+    default_output_named("dashboard")
+}
+
+/// Timestamped export path with a short label, e.g. `tokenmaxxing-limits-…png`.
+pub fn default_output_named(label: &str) -> std::path::PathBuf {
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let pictures = std::env::var_os("XDG_PICTURES_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| crate::creds::home().join("Pictures"));
-    let dir = if pictures.is_dir() { pictures } else { crate::creds::home() };
-    dir.join(format!("tokenmaxxing-{stamp}.png"))
+    let dir = if pictures.is_dir() {
+        pictures
+    } else {
+        crate::creds::home()
+    };
+    dir.join(format!("tokenmaxxing-{label}-{stamp}.png"))
 }
 
 /// Trim a gauge label to the distinguishing tail for the cramped reset axis:

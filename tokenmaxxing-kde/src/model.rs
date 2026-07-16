@@ -138,12 +138,14 @@ pub struct SpendInfo {
     pub disclaimer: Option<String>,
 }
 
-/// The whole dashboard for one refresh: both providers' live/estimated quota
-/// plus their aggregated local usage history.
+/// The whole dashboard for one refresh: every provider's live/estimated quota
+/// plus their aggregated local usage history. Order: Claude → Grok → opencode.
 #[derive(Clone, Debug)]
 pub struct Dashboard {
     pub claude_quota: Snapshot,
     pub claude_usage: Usage,
+    pub grok_quota: Snapshot,
+    pub grok_usage: Usage,
     pub opencode_quota: Snapshot,
     pub opencode_usage: Usage,
     pub generated_at: DateTime<Local>,

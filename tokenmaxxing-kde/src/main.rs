@@ -15,6 +15,8 @@ mod worker;
 
 use adw::prelude::*;
 use gtk::glib;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::mpsc;
 
 const APP_ID: &str = "dev.guitaripod.tokenmaxxing";
@@ -50,18 +52,33 @@ fn main() -> glib::ExitCode {
 
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_startup(|_| {
-        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+        // Follow the desktop light/dark preference (was ForceDark).
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::Default);
     });
-    app.connect_activate(build_ui);
+
+    // Build once. Later activates (desktop file / second CLI launch over D-Bus)
+    // only re-present the existing limits window — never another full UI tree.
+    let state: Rc<RefCell<Option<ui::AppUi>>> = Rc::new(RefCell::new(None));
+    app.connect_activate(move |app| {
+        if let Some(ui) = state.borrow().as_ref() {
+            ui.present();
+            return;
+        }
+        let ui = build_ui(app);
+        ui.present();
+        *state.borrow_mut() = Some(ui);
+    });
     app.run()
 }
 
 /// Headless one-shot: build the dashboard (or just the compact limits view) and
 /// write it to a PNG, no GUI.
 fn run_export(path: Option<std::path::PathBuf>, scope: render::Scope) -> glib::ExitCode {
+    // Share cards keep the dark brand look regardless of the host theme.
+    theme::set_dark(true);
     let dashboard = worker::snapshot_once();
     let output = path.unwrap_or_else(render::default_output);
-    let width = if scope == render::Scope::Limits { 520.0 } else { 1500.0 };
+    let width = if scope == render::Scope::Limits { 560.0 } else { 1500.0 };
     match render::export(&dashboard, width, 2.0, None, scope, &output) {
         Ok(()) => {
             println!("{}", output.display());
@@ -74,13 +91,12 @@ fn run_export(path: Option<std::path::PathBuf>, scope: render::Scope) -> glib::E
     }
 }
 
-fn build_ui(app: &adw::Application) {
+fn build_ui(app: &adw::Application) -> ui::AppUi {
     let (to_ui_tx, to_ui_rx) = async_channel::unbounded::<worker::ToUi>();
     let (from_ui_tx, from_ui_rx) = mpsc::channel::<worker::FromUi>();
     worker::spawn(to_ui_tx, from_ui_rx);
 
     let app_ui = ui::AppUi::new(app, from_ui_tx.clone());
-    app_ui.present();
 
     let (tray_tx, tray_rx) = async_channel::unbounded::<tray::TrayEvent>();
     if tray::start(tray_tx, from_ui_tx) {
@@ -115,4 +131,6 @@ fn build_ui(app: &adw::Application) {
             }
         }
     ));
+
+    app_ui
 }

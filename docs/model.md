@@ -4,11 +4,11 @@ The two apps share no code (idiomatic Rust struct + Swift struct), but render th
 
 ```
 Snapshot {
-  provider_id:   "anthropic" | "opencode-go"
-  provider_name: string          // "Claude", "opencode go"
-  subtitle:      string          // "Max · 20×", "$10/mo · estimated locally"
+  provider_id:   "anthropic" | "xai" | "opencode-go"
+  provider_name: string          // "Claude", "Grok", "opencode go"
+  subtitle:      string          // "Max · 20×", "X Premium · live", "$10/mo · estimated locally"
   authority:     Live | Estimated | Unavailable
-  source:        string          // "api.anthropic.com · live", "local opencode.db · estimate"
+  source:        string          // "api.anthropic.com · live", "cli-chat-proxy.grok.com · live", "local opencode.db · estimate"
   gauges:        [Gauge]         // one per quota window
   details:       [(key, value)]  // spec sheet: tokens, sessions, resets, plan…
   note:          string?         // the opencode-go estimate disclaimer
@@ -41,9 +41,11 @@ The live `Snapshot` (rings) is now joined by a `Usage` value per provider, compu
 
 ```
 Dashboard {
-  claude_quota:    Snapshot     // live rings, enhanced below
+  claude_quota:    Snapshot     // live rings
   claude_usage:    Usage        // from ~/.claude/projects transcripts
-  opencode_quota:  Snapshot     // estimated caps (existing)
+  grok_quota:      Snapshot     // live credits from cli-chat-proxy
+  grok_usage:      Usage        // from ~/.grok/sessions activity (no token $)
+  opencode_quota:  Snapshot     // estimated caps
   opencode_usage:  Usage        // from opencode.db, all providers
   generated_at:    timestamp
 }
@@ -70,7 +72,7 @@ Usage {
 A fullscreen-capable window (was a ~400px popover), everything on one screen, laid out by a responsive flow that reflows from ~1000px up to 4K. One layout engine drives both the live canvas and the PNG export, so a screenshot is pixel-for-pixel the live view.
 
 - **Hero** — the binding limit (`is_active`) as the largest ring, severity-coloured, with its reset ETA. The first-200ms "am I about to hit a wall?" answer.
-- **Sections** — Claude live quota (rings + reset-horizon timeline), Claude usage (value-returned hero, KPI strip, daily area charts, model/project bars, token-composition, activity heatmap), then the same two sections for opencode (caps + all-provider usage, plus a free-vs-paid donut).
+- **Sections** — Claude → Grok → opencode. Each provider gets live/estimated quota rings (and reset horizon where known), then a usage section. Claude has value-returned + token composition; Grok has activity-only history (turns/sessions — the CLI does not store per-turn tokens); opencode has caps + all-provider usage and a free-vs-paid donut.
 - **Screenshot utility** — export the whole dashboard or a chosen subset (segments on KDE, sections on macOS) to a high-resolution PNG that is also copied to the clipboard.
 
 ## Distinct identities

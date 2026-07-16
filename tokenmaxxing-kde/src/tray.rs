@@ -84,6 +84,12 @@ impl Tray for TokenmaxxingTray {
             }
             .into(),
             StandardItem {
+                label: "Open Grok usage".into(),
+                activate: Box::new(|_| open_url("https://grok.com/?_s=usage")),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
                 label: "Open opencode console".into(),
                 activate: Box::new(|_| open_url("https://opencode.ai/auth")),
                 ..Default::default()

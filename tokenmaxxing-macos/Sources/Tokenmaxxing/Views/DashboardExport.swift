@@ -36,13 +36,12 @@ struct ExportView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Text("github.com/guitaripod/tokenmaxxing").font(.system(size: 12, design: .monospaced)).foregroundStyle(Palette.muted)
-            Spacer()
-            Text("tokenmaxxing 0.1.0 · $ figures are API-equivalent estimates").font(.system(size: 12, design: .monospaced)).foregroundStyle(Palette.muted)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        Text("tokenmaxxing \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0")  ·  github.com/guitaripod/tokenmaxxing")
+            .font(.system(size: 10.5, design: .monospaced))
+            .foregroundStyle(Palette.muted.opacity(0.55))
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
     }
 
     private func dateString() -> String {
@@ -75,8 +74,12 @@ enum DashboardExport {
             return nil
         }
 
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.writeObjects([image])
+        // PNG bytes + NSImage — some paste targets only accept one of the two.
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.declareTypes([.png, .tiff], owner: nil)
+        pb.setData(png, forType: .png)
+        pb.writeObjects([image])
         NSWorkspace.shared.activateFileViewerSelecting([url])
         return url
     }

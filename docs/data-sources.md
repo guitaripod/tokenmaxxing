@@ -1,6 +1,6 @@
 # Data sources
 
-Both apps read the same local credentials Claude Code and opencode already write, and render the same [quota model](model.md).
+Both apps read the same local credentials Claude Code, Grok, and opencode already write, and render the same [quota model](model.md).
 
 ## Claude (Anthropic Max / Pro) — live
 
@@ -24,6 +24,50 @@ accept: application/json
 **Token refresh:** if `expiresAt` (ms) is within 2 minutes, or a call returns 401/403, the app POSTs to `https://platform.claude.com/v1/oauth/token` with `{grant_type: refresh_token, refresh_token, client_id: 9d1c250a-e61b-44d9-88ed-5944d1962f5e}`, then writes the rotated tokens **atomically** back into the credentials file, preserving every sibling key.
 
 > This endpoint is unofficial and undocumented. The apps send an honest `User-Agent` and poll gently (Claude every ~2 min, forced on manual refresh).
+
+## Grok (Grok Build / SuperGrok) — live
+
+**Credentials:** `~/.grok/auth.json` → OIDC session keyed by `https://auth.x.ai::<client_id>`, fields `key` (access token), `refresh_token`, `expires_at`, `oidc_issuer`, `oidc_client_id`.
+
+**Request** (the same one the Grok CLI's `/usage` command makes):
+
+```
+GET https://cli-chat-proxy.grok.com/v1/billing?format=credits
+authorization: Bearer <accessToken>
+accept: application/json
+x-grok-client-version: <cli version>
+x-grok-client-mode: cli
+```
+
+Plus a second call without `?format=credits` for monthly dollar spend:
+
+```
+GET https://cli-chat-proxy.grok.com/v1/billing
+```
+
+**Response fields used (credits format):**
+
+- `config.creditUsagePercent` — overall weekly included-credit utilization (0–100).
+- `config.currentPeriod.{start,end,type}` — weekly window; `end` is the trusted reset.
+- `config.productUsage[]` — per-product rings (`GrokBuild`, `Api`, …) with optional `usagePercent`.
+- `config.onDemandCap` / `onDemandUsed` / `prepaidBalance` — `{val}` money objects in **cents**.
+- `config.billingPeriodStart` / `billingPeriodEnd`.
+
+**Dollar format:** `config.monthlyLimit` / `used` / history rows — also cents.
+
+**Token refresh:** if `expires_at` is within 2 minutes, or a call returns 401/403, the app POSTs to `{oidc_issuer}/oauth2/token` with `grant_type=refresh_token`, then writes the rotated tokens **atomically** back into `auth.json`, preserving every sibling key.
+
+> Same family of unofficial-but-stable endpoints the CLI itself uses. Poll gently (~2 min), force on manual refresh.
+
+### Grok local usage history
+
+The CLI does **not** persist per-turn token usage on disk. Sessions under `~/.grok/sessions/<workspace>/<id>/` yield activity only:
+
+- `events.jsonl` `turn_started` lines → daily turn series, model, heatmap.
+- `summary.json` → fallback message counts, model id, timestamps.
+- Project name derived from the percent-encoded workspace folder.
+
+Dollar/token composition panels are omitted for Grok; KPIs are turns, sessions, models, and projects.
 
 ## opencode go — estimated locally
 

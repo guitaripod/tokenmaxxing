@@ -1,6 +1,6 @@
 # tokenmaxxing — macOS build
 
-Iridescent LLM-usage **dashboard** for **macOS**. SwiftUI · Liquid Glass · glass-card panels with Canvas-drawn charts.
+LLM-usage **dashboard** for **macOS**. SwiftUI · Liquid Glass · glass-card panels with Canvas-drawn charts.
 
 ![tokenmaxxing on macOS](../assets/tokenmaxxing-macos-sharecard.png)
 
@@ -15,13 +15,13 @@ make run        # swift build → assemble Tokenmaxxing.app → ad-hoc codesign 
 make install    # same, into /Applications
 ```
 
-It's a dock-less menu-bar agent (`LSUIElement`). The menu-bar item is a compact status summary and a launcher — **Open dashboard** opens the full, resizable, native-fullscreen dashboard window. The window's 📷 toolbar button opens a sheet to pick which sections to export.
+It's a dock-less menu-bar agent (`LSUIElement`). The menu-bar item is a compact status summary (Claude → Grok → opencode) and a launcher — **Open dashboard** opens the full, resizable, native-fullscreen dashboard window. Light/dark follows system appearance. Brand accents match Anthropic / xAI / opencode.
 
-The app ships **un-sandboxed on purpose** — the App Sandbox blocks reading `~/.claude` and `~/.local/share/opencode`, so this is distributed with Developer ID + notarization, not the Mac App Store. The build ad-hoc signs for local use.
+The app ships **un-sandboxed on purpose** — the App Sandbox blocks reading `~/.claude`, `~/.grok`, and `~/.local/share/opencode`, so this is distributed with Developer ID + notarization, not the Mac App Store. The build ad-hoc signs for local use.
 
 ## Screenshot / share export
 
-The menu-bar **Export screenshot** action, and the dashboard's screenshot sheet, render the dashboard (or the chosen sections) to a high-resolution PNG via `ImageRenderer`, copy it to the clipboard, and reveal it in Finder (`~/Pictures`). Headless:
+The menu-bar **Export screenshot** action, and the dashboard's screenshot sheet, render the dashboard (or the chosen sections) to a high-resolution PNG via `ImageRenderer`, copy it to the clipboard (PNG + image), and reveal it in Finder (`~/Pictures`). Exports carry a subtle `tokenmaxxing <version> · github.com/guitaripod/tokenmaxxing` credit. Headless:
 
 ```sh
 Tokenmaxxing --export [path.png]     # renders the whole dashboard to a PNG and exits
@@ -29,5 +29,6 @@ Tokenmaxxing --export [path.png]     # renders the whole dashboard to a PNG and 
 
 ## Data
 
-- **Claude** — live quota from `~/.claude/.credentials.json`, plus usage history from `~/.claude/projects/**/*.jsonl` (see [../docs/data-sources.md](../docs/data-sources.md)).
+- **Claude** — live quota from `~/.claude/.credentials.json`, plus usage history from `~/.claude/projects/**/*.jsonl`. Last-good usage cached under `~/Library/Application Support/tokenmaxxing/` for 429 resilience (see [../docs/data-sources.md](../docs/data-sources.md)).
+- **Grok** — live credits from `~/.grok/auth.json` via `cli-chat-proxy.grok.com/v1/billing`, plus activity history from `~/.grok/sessions`.
 - **opencode** — estimated caps and all-provider history from this Mac's `~/.local/share/opencode/opencode.db` via the SQLite3 C API, read-only. Labeled **EST**.

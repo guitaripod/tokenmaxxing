@@ -91,12 +91,12 @@ pub fn bars(cr: &Context, w: f64, h: f64, rows: &[BarRow]) {
         set(cr, (0.72, 0.77, 0.85));
         text_left(cr, &ellipsize(cr, &row.label, w * 0.62), 0.0, label_baseline);
         font(cr, text_size * 0.92, FontWeight::Bold);
-        set(cr, theme::TEXT);
+        set(cr, theme::text());
         text_right(cr, &row.caption, w, label_baseline);
 
         let track_y = y + row_h * 0.62;
         rounded(cr, 0.0, track_y, w, bar_h, bar_h / 2.0);
-        set(cr, theme::TRACK);
+        set(cr, theme::track());
         let _ = cr.fill();
         let frac = (row.value / max).clamp(0.0, 1.0);
         if frac > 0.0 {
@@ -117,7 +117,7 @@ pub fn donut(cr: &Context, w: f64, h: f64, slices: &[Slice], center_top: &str, c
 
     cr.set_line_cap(LineCap::Butt);
     cr.set_line_width(thickness);
-    set(cr, theme::TRACK);
+    set(cr, theme::track());
     cr.arc(cx, cy, radius - thickness / 2.0, 0.0, 2.0 * PI);
     let _ = cr.stroke();
 
@@ -137,10 +137,10 @@ pub fn donut(cr: &Context, w: f64, h: f64, slices: &[Slice], center_top: &str, c
     }
 
     font(cr, radius * 0.44, FontWeight::Bold);
-    set(cr, theme::TEXT);
+    set(cr, theme::text());
     centered(cr, center_top, cx, cy - radius * 0.02);
     font(cr, radius * 0.2, FontWeight::Normal);
-    set(cr, theme::MUTED);
+    set(cr, theme::muted());
     centered(cr, center_bottom, cx, cy + radius * 0.32);
 }
 
@@ -148,7 +148,7 @@ pub fn donut(cr: &Context, w: f64, h: f64, slices: &[Slice], center_top: &str, c
 pub fn stacked_bar(cr: &Context, x: f64, y: f64, w: f64, h: f64, segments: &[Slice]) {
     let total: f64 = segments.iter().map(|s| s.value).sum();
     rounded(cr, x, y, w, h, h / 2.0);
-    set(cr, theme::TRACK);
+    set(cr, theme::track());
     let _ = cr.fill();
     if total <= 0.0 {
         return;
@@ -187,14 +187,14 @@ pub fn heatmap(cr: &Context, w: f64, h: f64, counts: &[[u64; 24]; 7], max: u64, 
     font(cr, (cell_h * 0.44).clamp(8.0, 13.0), FontWeight::Normal);
     for (row, label) in WEEKDAYS.iter().enumerate() {
         let cy = row as f64 * cell_h;
-        set(cr, theme::MUTED);
+        set(cr, theme::muted());
         text_right(cr, label, gutter_l - inset * 2.0, cy + cell_h * 0.66);
         for hour in 0..24 {
             let x = gutter_l + hour as f64 * cell_w;
             let count = counts[row][hour];
             rounded(cr, x + inset, cy + inset, cell_w - inset * 2.0, cell_h - inset * 2.0, inset.max(1.5));
             if count == 0 {
-                set_alpha(cr, theme::TRACK, 0.5);
+                set_alpha(cr, theme::track(), 0.5);
             } else {
                 let intensity = (count as f64 / max).sqrt().clamp(0.12, 1.0);
                 set_alpha(cr, accent, intensity);
@@ -204,7 +204,7 @@ pub fn heatmap(cr: &Context, w: f64, h: f64, counts: &[[u64; 24]; 7], max: u64, 
     }
 
     font(cr, (cell_h * 0.4).clamp(8.0, 12.0), FontWeight::Normal);
-    set(cr, theme::MUTED);
+    set(cr, theme::muted());
     for hour in [0, 6, 12, 18, 23] {
         let x = gutter_l + (hour as f64 + 0.5) * cell_w;
         centered(cr, &format!("{hour}"), x, h - gutter_b * 0.28);
@@ -212,7 +212,7 @@ pub fn heatmap(cr: &Context, w: f64, h: f64, counts: &[[u64; 24]; 7], max: u64, 
 }
 
 fn baseline(cr: &Context, x0: f64, y: f64, x1: f64) {
-    set_alpha(cr, theme::TRACK, 0.8);
+    set_alpha(cr, theme::track(), 0.8);
     cr.set_line_width(1.0);
     cr.move_to(x0, y);
     cr.line_to(x1, y);

@@ -3,19 +3,26 @@ use std::path::PathBuf;
 
 pub const SCALE_STEPS: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
 
+/// Compact limits window — measured from the live window (570×730) and always
+/// re-applied on open, bottom-right of the current monitor.
+pub const LIMITS_WIDTH: i32 = 570;
+pub const LIMITS_HEIGHT: i32 = 730;
+pub const LIMITS_SCREEN_MARGIN: i32 = 20;
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Config {
     #[serde(default = "default_scale")]
     pub ui_scale: f64,
-    /// Remembered window sizes; `None` falls back to the built-in defaults.
-    #[serde(default)]
-    pub limits_width: Option<i32>,
-    #[serde(default)]
-    pub limits_height: Option<i32>,
+    /// Remembered full-dashboard size; `None` falls back to built-in defaults.
     #[serde(default)]
     pub dashboard_width: Option<i32>,
     #[serde(default)]
     pub dashboard_height: Option<i32>,
+    /// Legacy fields — ignored; mini window size is fixed to [`LIMITS_WIDTH`]×[`LIMITS_HEIGHT`].
+    #[serde(default)]
+    pub limits_width: Option<i32>,
+    #[serde(default)]
+    pub limits_height: Option<i32>,
 }
 
 fn default_scale() -> f64 {
@@ -26,10 +33,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             ui_scale: default_scale(),
-            limits_width: None,
-            limits_height: None,
             dashboard_width: None,
             dashboard_height: None,
+            limits_width: None,
+            limits_height: None,
         }
     }
 }

@@ -10,9 +10,12 @@ final class AppModel {
     var launchAtLogin: Bool = false
 
     private var loop: Task<Void, Never>?
-    private let history = ClaudeHistory()
+    private let claudeHistory = ClaudeHistory()
+    private let grokHistory = GrokHistory()
     private var lastGoodClaude: Snapshot?
-    private var claudeHealthy = true
+    private var lastGoodGrok: Snapshot?
+    private var claudeNextFetch = Date.distantPast
+    private var grokHealthy = true
 
     init() {
         launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -22,55 +25,87 @@ final class AppModel {
         guard loop == nil else { return }
         loop = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refreshOnce()
-                // Poll gently when healthy; retry sooner while recovering.
-                let seconds = (self?.claudeHealthy ?? true) ? 90 : 30
-                try? await Task.sleep(for: .seconds(seconds))
+                await self?.refreshOnce(forceClaude: false)
+                // Base tick 30s; Claude's own cooldown decides whether we actually re-hit the API.
+                try? await Task.sleep(for: .seconds(30))
             }
         }
     }
 
     func refresh() {
-        Task { await refreshOnce() }
+        Task { await refreshOnce(forceClaude: true) }
     }
 
-    private func refreshOnce() async {
-        async let anthropic = fetchClaude()
-        async let claudeUsage = history.scan()
+    private func refreshOnce(forceClaude: Bool) async {
+        async let claude = fetchClaude(force: forceClaude)
+        async let grok = fetchGrok()
+        async let claudeUsage = claudeHistory.scan()
+        async let grokUsage = grokHistory.scan()
         let opencodeQuota = await Task.detached { OpenCodeProvider.fetch() }.value
         let opencodeUsage = await Task.detached { OpenCodeProvider.usage() }.value
         dashboard = Dashboard(
-            claudeQuota: await anthropic,
+            claudeQuota: await claude,
             claudeUsage: await claudeUsage,
+            grokQuota: await grok,
+            grokUsage: await grokUsage,
             opencodeQuota: opencodeQuota,
             opencodeUsage: opencodeUsage,
             generatedAt: Date()
         )
-        updatedText = "updated \(Self.timeString()) · tokenmaxxing 0.1.0"
+        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
+        updatedText = "updated \(Self.timeString()) · tokenmaxxing \(ver)"
     }
 
-    /// Fetch the live quota with a quick retry, falling back to the last
-    /// successful snapshot on a transient failure (429, network blip, token
-    /// race) instead of blanking the card to OFFLINE. Only OFFLINE if no good
-    /// snapshot has ever been obtained.
-    private func fetchClaude() async -> Snapshot {
-        var latest = await AnthropicProvider.fetch()
-        if latest.authority != .live {
-            // One quick retry to ride out a transient blip.
-            try? await Task.sleep(for: .seconds(3))
-            latest = await AnthropicProvider.fetch()
-        }
-        if latest.authority == .live {
-            lastGoodClaude = latest
-            claudeHealthy = true
-            return latest
-        }
-        claudeHealthy = false
-        if var good = lastGoodClaude {
-            good.source = "api.anthropic.com · live (cached, retrying)"
+    private func fetchClaude(force: Bool) async -> Snapshot {
+        if !force, Date() < claudeNextFetch, let good = lastGoodClaude {
             return good
         }
-        return latest
+        let result = await AnthropicProvider.fetch()
+        claudeNextFetch = Date().addingTimeInterval(result.cooldown)
+        if result.fresh || !result.snapshot.gauges.isEmpty || lastGoodClaude == nil {
+            lastGoodClaude = result.snapshot
+            return result.snapshot
+        }
+        // Keep rings; annotate cooldown.
+        if var good = lastGoodClaude {
+            good.source = result.snapshot.source
+            good.note = result.snapshot.note
+            lastGoodClaude = good
+            return good
+        }
+        return result.snapshot
+    }
+
+    private func fetchGrok() async -> Snapshot {
+        let result = await fetchGrokLive(lastGood: lastGoodGrok)
+        if result.fresh {
+            lastGoodGrok = result.snapshot
+            grokHealthy = true
+        } else {
+            grokHealthy = false
+        }
+        return result.snapshot
+    }
+
+    private struct LiveResult {
+        var snapshot: Snapshot
+        var fresh: Bool
+    }
+
+    private func fetchGrokLive(lastGood: Snapshot?) async -> LiveResult {
+        var latest = await GrokProvider.fetch()
+        if latest.authority != .live {
+            try? await Task.sleep(for: .seconds(2))
+            latest = await GrokProvider.fetch()
+        }
+        if latest.authority == .live {
+            return LiveResult(snapshot: latest, fresh: true)
+        }
+        if var good = lastGood {
+            good.source = "cli-chat-proxy.grok.com · live (cached, retrying)"
+            return LiveResult(snapshot: good, fresh: false)
+        }
+        return LiveResult(snapshot: latest, fresh: false)
     }
 
     func exportShareCard() {

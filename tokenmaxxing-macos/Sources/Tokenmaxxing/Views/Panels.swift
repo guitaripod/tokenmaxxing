@@ -35,9 +35,9 @@ struct PanelCard<Content: View>: View {
 
     var body: some View {
         content()
-            .padding(14)
+            .padding(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .modifier(CardBackground(accent: accent, radius: 16, glass: glass))
+            .modifier(CardBackground(accent: accent, radius: 14, glass: glass))
     }
 }
 
@@ -139,7 +139,7 @@ struct CalloutPanel: View {
             Text(title.uppercased()).font(.system(size: 10.5, weight: .bold)).foregroundStyle(Palette.muted).lineLimit(1)
             Text(headline).font(.system(size: 24, weight: .bold, design: .rounded)).foregroundStyle(accent).lineLimit(1).minimumScaleFactor(0.5)
             if !body_.isEmpty {
-                Text(body_).font(.system(size: 12)).foregroundStyle(Palette.text.opacity(0.82)).fixedSize(horizontal: false, vertical: true)
+                Text(body_).font(.system(size: 12)).foregroundStyle(Palette.secondaryText).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
@@ -178,21 +178,26 @@ struct RingsPanel: View {
             HStack(alignment: .top, spacing: 6) {
                 ForEach(gauges.prefix(5)) { gauge in
                     VStack(spacing: 4) {
-                        ZStack(alignment: .top) {
-                            RingGauge(gauge: gauge, accent: accent, diameter: 74)
+                        ZStack(alignment: .topTrailing) {
+                            RingGauge(gauge: gauge, accent: Palette.gauge(accent, gauge.severity), diameter: 72)
                             if gauge.isActive {
-                                Text("ACTIVE")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .padding(.horizontal, 5).padding(.vertical, 1)
-                                    .background(Capsule().fill(Palette.pink))
-                                    .foregroundStyle(Palette.base)
-                                    .offset(y: -4)
+                                Circle()
+                                    .fill(Palette.rose)
+                                    .frame(width: 6, height: 6)
+                                    .offset(x: 1, y: -1)
                             }
                         }
-                        Text(gauge.label).font(.system(size: 10.5)).foregroundStyle(Palette.text.opacity(0.82))
-                            .multilineTextAlignment(.center).lineLimit(2).frame(minHeight: 26, alignment: .top)
+                        Text(gauge.label)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(Palette.secondaryText)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                            .frame(minHeight: 26, alignment: .top)
                         if let sub = ringSubline(gauge) {
-                            Text(sub).font(.system(size: 9.5, design: .monospaced)).foregroundStyle(Palette.muted).lineLimit(1)
+                            Text(sub)
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(Palette.muted)
+                                .lineLimit(1)
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -235,11 +240,11 @@ struct HeroRingPanel: View {
                             .font(.system(size: 12.5)).foregroundStyle(Palette.gauge(accent, gauge.severity))
                     }
                     if gauge.isActive {
-                        Text("BINDING CONSTRAINT")
+                        Text("BINDING")
                             .font(.system(size: 9.5, weight: .bold))
                             .padding(.horizontal, 7).padding(.vertical, 2)
-                            .background(Capsule().fill(Palette.pink))
-                            .foregroundStyle(Palette.base)
+                            .background(Capsule().fill(Palette.rose))
+                            .foregroundStyle(Palette.onBadge)
                     }
                     Spacer(minLength: 0)
                 }
