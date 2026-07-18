@@ -1,3 +1,4 @@
+use super::opencode_remote;
 use crate::creds;
 use crate::model::{
     Authority, DayPoint, Gauge, Heatmap, Segment, Snapshot, TokenBreakdown, Totals, Unit, Usage,
@@ -11,7 +12,6 @@ const CAP_5H: f64 = 12.0;
 const CAP_7D: f64 = 30.0;
 const CAP_30D: f64 = 60.0;
 
-const NOTE: &str = "No usage API exists. Estimated from this machine's opencode.db against Go's rolling dollar caps — may miss usage on other machines and server-side accounting.";
 const PROVIDER: &str = "opencode-go";
 
 pub fn fetch() -> Snapshot {
@@ -22,20 +22,65 @@ pub fn fetch() -> Snapshot {
         return degraded("no opencode.db on this machine yet");
     }
     match collect() {
-        Ok((gauges, details)) => Snapshot {
+        Ok((gauges, details, remote)) => Snapshot {
             provider_id: PROVIDER.into(),
             provider_name: "opencode go".into(),
-            subtitle: "$10/mo · estimated locally".into(),
+            subtitle: subtitle(&remote),
             authority: Authority::Estimated,
-            source: "local opencode.db · estimate".into(),
+            source: source(&remote),
             gauges,
             details,
-            note: Some(NOTE.into()),
+            note: Some(note(&remote)),
             error: None,
             spend: None,
         },
         Err(error) => degraded(&error),
     }
+}
+
+fn coverage(remote: &opencode_remote::RemoteReport) -> String {
+    let mut parts = vec!["local".to_string()];
+    parts.extend(remote.reached.iter().cloned());
+    parts.extend(remote.stale.iter().map(|host| format!("{host} (cached)")));
+    let mut text = parts.join(" + ");
+    if !remote.unreachable.is_empty() {
+        text.push_str(&format!(" · {} unreachable", remote.unreachable.join(", ")));
+    }
+    text
+}
+
+fn subtitle(remote: &opencode_remote::RemoteReport) -> String {
+    let machines = 1 + remote.included_count();
+    if machines > 1 {
+        format!("$10/mo · estimated · {machines} machines")
+    } else {
+        "$10/mo · estimated locally".into()
+    }
+}
+
+fn source(remote: &opencode_remote::RemoteReport) -> String {
+    if remote.included_count() == 0 {
+        "local opencode.db · estimate".into()
+    } else {
+        format!("opencode.db: {} · estimate", coverage(remote))
+    }
+}
+
+fn note(remote: &opencode_remote::RemoteReport) -> String {
+    if remote.configured.is_empty() {
+        return "No usage API exists. Estimated from this machine's opencode.db against Go's rolling dollar caps — may miss usage on other machines and server-side accounting. List other machines in the tokenmaxxing config.json under opencode_remote_hosts to include them over SSH.".into();
+    }
+    let mut text = format!(
+        "No usage API exists. Summed from opencode.db on this machine plus {} over SSH against Go's rolling dollar caps — may still miss unlisted machines and server-side accounting.",
+        remote.configured.join(", ")
+    );
+    for host in &remote.stale {
+        text.push_str(&format!(" {host}: using figures cached under 15 minutes ago."));
+    }
+    for host in &remote.unreachable {
+        text.push_str(&format!(" {host} unreachable — its spend is not included."));
+    }
+    text
 }
 
 /// Full local-history analytics across every provider opencode has run — the
@@ -50,8 +95,9 @@ pub fn usage() -> Usage {
     }
 }
 
-fn collect() -> Result<(Vec<Gauge>, Vec<(String, String)>), String> {
+fn collect() -> Result<(Vec<Gauge>, Vec<(String, String)>, opencode_remote::RemoteReport), String> {
     let connection = open_read_only()?;
+    let remote = opencode_remote::report();
     let now_ms = Local::now().timestamp_millis();
 
     let windows = [
@@ -62,7 +108,10 @@ fn collect() -> Result<(Vec<Gauge>, Vec<(String, String)>), String> {
     let gauges = windows
         .into_iter()
         .map(|(key, label, span_ms, cap)| {
-            let (spend, requests) = window_stats(&connection, now_ms - span_ms)?;
+            let (local_spend, local_requests) = window_stats(&connection, now_ms - span_ms)?;
+            let extra = remote.stats.window(key);
+            let spend = local_spend + extra.spend;
+            let requests = local_requests + extra.requests;
             Ok(Gauge {
                 key: key.into(),
                 label: label.into(),
@@ -76,7 +125,29 @@ fn collect() -> Result<(Vec<Gauge>, Vec<(String, String)>), String> {
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    Ok((gauges, all_time_details(&connection)?))
+    let details = detail_rows(all_time_stats(&connection)?, &remote);
+    Ok((gauges, details, remote))
+}
+
+fn detail_rows(
+    local: AllTimeStats,
+    remote: &opencode_remote::RemoteReport,
+) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    if !remote.configured.is_empty() {
+        rows.push(("Machines".into(), coverage(remote)));
+    }
+    rows.extend([
+        (
+            "Go spend (all-time)".into(),
+            format!("${:.2}", local.spend + remote.stats.all_time_spend),
+        ),
+        ("Go sessions".into(), (local.sessions + remote.stats.sessions).to_string()),
+        ("Go tokens in".into(), human_count(local.tokens_in + remote.stats.tokens_in)),
+        ("Go tokens out".into(), human_count(local.tokens_out + remote.stats.tokens_out)),
+        ("Go cache read".into(), human_count(local.cache_read + remote.stats.cache_read)),
+    ]);
+    rows
 }
 
 fn collect_usage() -> Result<Usage, String> {
@@ -169,8 +240,16 @@ fn window_stats(connection: &Connection, cutoff_ms: i64) -> Result<(f64, i64), S
         .map_err(|e| format!("usage query: {e}"))
 }
 
-fn all_time_details(connection: &Connection) -> Result<Vec<(String, String)>, String> {
-    let row = connection
+struct AllTimeStats {
+    spend: f64,
+    sessions: i64,
+    tokens_in: i64,
+    tokens_out: i64,
+    cache_read: i64,
+}
+
+fn all_time_stats(connection: &Connection) -> Result<AllTimeStats, String> {
+    connection
         .query_row(
             "SELECT COALESCE(SUM(json_extract(data,'$.cost')),0.0), \
                     COUNT(DISTINCT session_id), \
@@ -180,24 +259,16 @@ fn all_time_details(connection: &Connection) -> Result<Vec<(String, String)>, St
              FROM message WHERE json_extract(data,'$.providerID')=?1",
             [PROVIDER],
             |row| {
-                Ok((
-                    row.get::<_, f64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                ))
+                Ok(AllTimeStats {
+                    spend: row.get(0)?,
+                    sessions: row.get(1)?,
+                    tokens_in: row.get(2)?,
+                    tokens_out: row.get(3)?,
+                    cache_read: row.get(4)?,
+                })
             },
         )
-        .map_err(|e| format!("stats query: {e}"))?;
-    let (spend, sessions, input, output, cache_read) = row;
-    Ok(vec![
-        ("Go spend (all-time)".into(), format!("${spend:.2}")),
-        ("Go sessions".into(), sessions.to_string()),
-        ("Go tokens in".into(), human_count(input)),
-        ("Go tokens out".into(), human_count(output)),
-        ("Go cache read".into(), human_count(cache_read)),
-    ])
+        .map_err(|e| format!("stats query: {e}"))
 }
 
 /// Cost, tokens and message count per local calendar day, ascending.

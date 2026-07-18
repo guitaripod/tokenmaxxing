@@ -69,7 +69,7 @@ The CLI does **not** persist per-turn token usage on disk. Sessions under `~/.gr
 
 Dollar/token composition panels are omitted for Grok; KPIs are turns, sessions, models, and projects.
 
-## opencode go — estimated locally
+## opencode go — estimated from your machines
 
 **Credentials:** `~/.local/share/opencode/auth.json` → `opencode-go` (type `api`, an `sk-` key). This key only authenticates the **Zen model gateway** (`https://opencode.ai/zen/go/v1/...`), not the account/billing API.
 
@@ -86,6 +86,8 @@ WHERE json_extract(data,'$.providerID')='opencode-go'
 ```
 
 `fraction = min(1, window_spend / cap)`. Plus all-time totals (spend, sessions, tokens in/out, cache read) for the detail block. The card is labeled **EST** with a disclaimer.
+
+**Other machines over SSH:** the caps are account-wide, so a single machine's `opencode.db` under-counts whenever more than one machine runs opencode. Both builds therefore read `opencode_remote_hosts` from `~/.config/tokenmaxxing/config.json` (an array of hostnames — Tailscale peers work well) and, for each host, run the same window/all-time aggregation remotely via non-interactive `ssh <host> sqlite3 -readonly -json ~/.local/share/opencode/opencode.db`, streaming the SQL over stdin. Only the ~300-byte aggregate row crosses the wire, never the database. Per-host results are cached for 60 s; if a host stops answering, its last reading is reused for up to 15 min and then dropped, with the card's note and a **Machines** detail row spelling out exactly which machines are included, cached, or unreachable. The merged spend is summed **before** the `min(1, spend/cap)` clamp. Requirements per remote host: key-based SSH (`BatchMode`), a `sqlite3` CLI, and opencode's default data path.
 
 **Wiring a live reading later:** capture the console's own request (DevTools → Network → the `usage/me` or `balance/summary` call → *Copy as cURL*) to get the exact base URL, Bearer token, and response shape, then add a provider that prefers the live endpoint and falls back to the local estimate when the token is absent or expired. The account token comes from an OAuth device flow (`/accounts/deviceauth/{usercode,token}`), which is the durable, renewable path.
 

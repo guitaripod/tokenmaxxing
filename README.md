@@ -23,7 +23,7 @@ Both render the same quota model for three subscriptions, in order:
 
 - **Claude** (Anthropic Max / Pro) — **live**, from the same OAuth usage endpoint Claude Code's `/usage` uses.
 - **Grok** (Grok Build / SuperGrok) — **live**, from the same billing endpoint the Grok CLI's `/usage` uses.
-- **opencode go** (OpenCode's $10/mo plan) — **estimated locally** (see the honesty note below).
+- **opencode go** (OpenCode's $10/mo plan) — **estimated across your machines** (local opencode.db + any SSH-listed peers; see the honesty note below).
 
 Each quota *window* gets its own ring gauge (5-hour session, weekly credits, per-product, rolling spend caps…), coloured by headroom and by brand-matched accents — Claude terracotta, Grok monochrome, opencode green.
 
@@ -31,7 +31,7 @@ Each quota *window* gets its own ring gauge (5-hour session, weekly credits, per
 
 OpenCode Go's quota is a set of **rolling dollar spend caps** (~$12 / 5h, ~$30 / week, ~$60 / month) enforced server-side. There is **no public API** to read the remaining amount — it's only visible in the web console at [opencode.ai/auth](https://opencode.ai/auth) behind a GitHub login.
 
-So both builds **estimate** it by summing this machine's spend from the local `opencode.db` against those caps, and label the card **EST** with a plain-language disclaimer. The estimate can under-count usage from other machines and won't match server-side accounting exactly. Claude and Grok numbers, by contrast, are genuinely live. See [docs/data-sources.md](docs/data-sources.md) for the full breakdown.
+So both builds **estimate** it by summing spend from the local `opencode.db` against those caps — and, because the caps are account-wide, they also pull the same aggregate from **every other machine you list** in `~/.config/tokenmaxxing/config.json` (`"opencode_remote_hosts": ["arch"]`) over non-interactive SSH (Tailscale peers work well; only a ~300-byte aggregate row crosses the wire, never the database). The card is labeled **EST** with a plain-language disclaimer and spells out which machines are included, cached, or unreachable. The estimate still won't match server-side accounting exactly, and misses machines you haven't listed. Claude and Grok numbers, by contrast, are genuinely live. See [docs/data-sources.md](docs/data-sources.md) for the full breakdown.
 
 ## Features (both builds)
 

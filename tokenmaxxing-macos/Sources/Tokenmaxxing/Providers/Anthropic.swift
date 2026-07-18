@@ -75,7 +75,7 @@ enum AnthropicProvider {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
         request.setValue(oauthBeta, forHTTPHeaderField: "anthropic-beta")
         request.setValue("application/json", forHTTPHeaderField: "accept")
-        request.setValue("tokenmaxxing/0.2.0 (+https://github.com/guitaripod/tokenmaxxing)", forHTTPHeaderField: "user-agent")
+        request.setValue("tokenmaxxing/\(AppVersion.current) (+https://github.com/guitaripod/tokenmaxxing)", forHTTPHeaderField: "user-agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0

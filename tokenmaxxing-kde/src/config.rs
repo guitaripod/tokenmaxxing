@@ -23,6 +23,10 @@ pub struct Config {
     pub limits_width: Option<i32>,
     #[serde(default)]
     pub limits_height: Option<i32>,
+    /// Other machines whose opencode.db is summed into the Go cap estimate,
+    /// reached via non-interactive `ssh <host>` (e.g. Tailscale peers).
+    #[serde(default)]
+    pub opencode_remote_hosts: Vec<String>,
 }
 
 fn default_scale() -> f64 {
@@ -37,6 +41,7 @@ impl Default for Config {
             dashboard_height: None,
             limits_width: None,
             limits_height: None,
+            opencode_remote_hosts: Vec::new(),
         }
     }
 }

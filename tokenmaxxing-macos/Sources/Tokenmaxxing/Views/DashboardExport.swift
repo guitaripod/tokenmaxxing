@@ -36,7 +36,7 @@ struct ExportView: View {
     }
 
     private var footer: some View {
-        Text("tokenmaxxing \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0")  ·  github.com/guitaripod/tokenmaxxing")
+        Text("tokenmaxxing \(AppVersion.current)  ·  github.com/guitaripod/tokenmaxxing")
             .font(.system(size: 10.5, design: .monospaced))
             .foregroundStyle(Palette.muted.opacity(0.55))
             .frame(maxWidth: .infinity)
@@ -108,7 +108,7 @@ struct LimitsExportView: View {
 
             Rectangle().fill(Palette.track.opacity(0.7)).frame(height: 1)
 
-            Text("tokenmaxxing \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0")  ·  github.com/guitaripod/tokenmaxxing")
+            Text("tokenmaxxing \(AppVersion.current)  ·  github.com/guitaripod/tokenmaxxing")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(Palette.muted.opacity(0.55))
                 .frame(maxWidth: .infinity)

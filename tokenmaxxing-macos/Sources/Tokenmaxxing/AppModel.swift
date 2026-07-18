@@ -52,7 +52,7 @@ final class AppModel {
             opencodeUsage: opencodeUsage,
             generatedAt: Date()
         )
-        let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
+        let ver = AppVersion.current
         updatedText = "updated \(Self.timeString()) · tokenmaxxing \(ver)"
     }
 

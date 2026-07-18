@@ -6,7 +6,7 @@ enum GrokProvider {
     static let creditsURL = URL(string: "https://cli-chat-proxy.grok.com/v1/billing?format=credits")!
     static let billingURL = URL(string: "https://cli-chat-proxy.grok.com/v1/billing")!
     static let clientVersion = "0.2.101"
-    static let userAgent = "tokenmaxxing/0.2.0 (+https://github.com/guitaripod/tokenmaxxing)"
+    static let userAgent = "tokenmaxxing/\(AppVersion.current) (+https://github.com/guitaripod/tokenmaxxing)"
 
     static func fetch() async -> Snapshot {
         do {

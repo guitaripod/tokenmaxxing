@@ -3,6 +3,14 @@ import SQLite3
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+struct OpenCodeAllTime {
+    var spend = 0.0
+    var sessions: Int64 = 0
+    var tokensIn: Int64 = 0
+    var tokensOut: Int64 = 0
+    var cacheRead: Int64 = 0
+}
+
 /// opencode-go has no usage API, so this estimates rolling-window spend from the
 /// local opencode.db against Go's dollar caps, and separately aggregates full
 /// usage history across every provider opencode has run.
@@ -11,7 +19,6 @@ enum OpenCodeProvider {
     static let cap7d = 30.0
     static let cap30d = 60.0
     static let provider = "opencode-go"
-    static let note = "No usage API exists. Estimated from this machine's opencode.db against Go's rolling dollar caps — may miss usage on other machines and server-side accounting."
 
     static func fetch() -> Snapshot {
         guard Creds.opencodeGoConfigured() else {
@@ -21,16 +28,16 @@ enum OpenCodeProvider {
             return degraded("no opencode.db on this machine yet")
         }
         do {
-            let (gauges, details) = try collect()
+            let (gauges, details, remote) = try collect()
             return Snapshot(
                 providerId: provider,
                 providerName: "opencode go",
-                subtitle: "$10/mo · estimated locally",
+                subtitle: subtitle(for: remote),
                 authority: .estimated,
-                source: "local opencode.db · estimate",
+                source: source(for: remote),
                 gauges: gauges,
                 details: details,
-                note: note,
+                note: note(for: remote),
                 error: nil
             )
         } catch {
@@ -101,9 +108,10 @@ enum OpenCodeProvider {
         w.messages += d.messages
     }
 
-    private static func collect() throws -> ([Gauge], [Detail]) {
+    private static func collect() throws -> ([Gauge], [Detail], OpenCodeRemoteReport) {
         let db = try Database(path: Creds.opencodeDbPath.path)
         defer { db.close() }
+        let remote = OpenCodeRemote.report()
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         let windows: [(String, String, Int64, Double)] = [
             ("5h", "5-hour rolling", 5 * 3_600_000, cap5h),
@@ -112,7 +120,10 @@ enum OpenCodeProvider {
         ]
         var gauges: [Gauge] = []
         for (key, label, span, cap) in windows {
-            let (spend, requests) = try db.windowStats(cutoffMs: nowMs - span, provider: provider)
+            let (localSpend, localRequests) = try db.windowStats(cutoffMs: nowMs - span, provider: provider)
+            let extra = remote.stats.windows[key] ?? OpenCodeRemoteWindow()
+            let spend = localSpend + extra.spend
+            let requests = localRequests + extra.requests
             gauges.append(Gauge(
                 key: key, label: label,
                 fraction: min(1, max(0, spend / cap)),
@@ -120,7 +131,58 @@ enum OpenCodeProvider {
                 detail: "\(requests) req", resetsAt: nil, trustedReset: false
             ))
         }
-        return (gauges, try db.allTimeDetails(provider: provider))
+        let details = detailRows(local: try db.allTimeStats(provider: provider), remote: remote)
+        return (gauges, details, remote)
+    }
+
+    private static func detailRows(local: OpenCodeAllTime, remote: OpenCodeRemoteReport) -> [Detail] {
+        var rows: [Detail] = []
+        if !remote.configured.isEmpty {
+            rows.append(Detail(key: "Machines", value: coverage(remote)))
+        }
+        rows += [
+            Detail(key: "Go spend (all-time)", value: String(format: "$%.2f", local.spend + remote.stats.allTimeSpend)),
+            Detail(key: "Go sessions", value: "\(local.sessions + remote.stats.sessions)"),
+            Detail(key: "Go tokens in", value: humanCount(local.tokensIn + remote.stats.tokensIn)),
+            Detail(key: "Go tokens out", value: humanCount(local.tokensOut + remote.stats.tokensOut)),
+            Detail(key: "Go cache read", value: humanCount(local.cacheRead + remote.stats.cacheRead)),
+        ]
+        return rows
+    }
+
+    private static func coverage(_ remote: OpenCodeRemoteReport) -> String {
+        var parts = ["local"]
+        parts += remote.reached
+        parts += remote.stale.map { "\($0) (cached)" }
+        var text = parts.joined(separator: " + ")
+        if !remote.unreachable.isEmpty {
+            text += " · \(remote.unreachable.joined(separator: ", ")) unreachable"
+        }
+        return text
+    }
+
+    private static func subtitle(for remote: OpenCodeRemoteReport) -> String {
+        let machines = 1 + remote.included.count
+        return machines > 1 ? "$10/mo · estimated · \(machines) machines" : "$10/mo · estimated locally"
+    }
+
+    private static func source(for remote: OpenCodeRemoteReport) -> String {
+        guard !remote.included.isEmpty else { return "local opencode.db · estimate" }
+        return "opencode.db: \(coverage(remote)) · estimate"
+    }
+
+    private static func note(for remote: OpenCodeRemoteReport) -> String {
+        guard !remote.configured.isEmpty else {
+            return "No usage API exists. Estimated from this machine's opencode.db against Go's rolling dollar caps — may miss usage on other machines and server-side accounting. List other machines in ~/.config/tokenmaxxing/config.json under opencode_remote_hosts to include them over SSH."
+        }
+        var text = "No usage API exists. Summed from opencode.db on this machine plus \(remote.configured.joined(separator: ", ")) over SSH against Go's rolling dollar caps — may still miss unlisted machines and server-side accounting."
+        for host in remote.stale {
+            text += " \(host): using figures cached under 15 minutes ago."
+        }
+        for host in remote.unreachable {
+            text += " \(host) unreachable — its spend is not included."
+        }
+        return text
     }
 
     private static func degraded(_ message: String) -> Snapshot {
@@ -188,7 +250,7 @@ private final class Database {
         return (sqlite3_column_double(stmt, 0), sqlite3_column_int64(stmt, 1))
     }
 
-    func allTimeDetails(provider: String) throws -> [Detail] {
+    func allTimeStats(provider: String) throws -> OpenCodeAllTime {
         let sql = """
         SELECT COALESCE(SUM(json_extract(data,'$.cost')),0.0),
                COUNT(DISTINCT session_id),
@@ -203,14 +265,14 @@ private final class Database {
         }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_text(stmt, 1, provider, -1, SQLITE_TRANSIENT)
-        guard sqlite3_step(stmt) == SQLITE_ROW else { return [] }
-        return [
-            Detail(key: "Go spend (all-time)", value: String(format: "$%.2f", sqlite3_column_double(stmt, 0))),
-            Detail(key: "Go sessions", value: "\(sqlite3_column_int64(stmt, 1))"),
-            Detail(key: "Go tokens in", value: humanCount(sqlite3_column_int64(stmt, 2))),
-            Detail(key: "Go tokens out", value: humanCount(sqlite3_column_int64(stmt, 3))),
-            Detail(key: "Go cache read", value: humanCount(sqlite3_column_int64(stmt, 4))),
-        ]
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return OpenCodeAllTime() }
+        return OpenCodeAllTime(
+            spend: sqlite3_column_double(stmt, 0),
+            sessions: sqlite3_column_int64(stmt, 1),
+            tokensIn: sqlite3_column_int64(stmt, 2),
+            tokensOut: sqlite3_column_int64(stmt, 3),
+            cacheRead: sqlite3_column_int64(stmt, 4)
+        )
     }
 
     func dailySeries() throws -> [DayPoint] {
